@@ -1,0 +1,11 @@
+riotwatcher
+pandas
+numpy
+scikit-learn
+xgboost
+lightgbm
+torch
+matplotlib
+seaborn
+pyyaml
+tqdm

@@ -1,0 +1,20 @@
+riot_api:
+  region: "na1"
+  queue_id: 420  # Ranked Solo/Duo
+  tier: "DIAMOND"
+  divisions: ["I", "II", "III", "IV"]
+
+collection:
+  max_matches_per_player: 50
+  min_game_duration: 900  # 15 minutes in seconds
+  min_remake_duration: 180  # 3 minutes
+
+features:
+  num_champions: 170
+  champion_embedding_dim: 32
+
+training:
+  test_size: 0.15
+  val_size: 0.15
+  random_state: 42
+  split_method: "time_based"  # time_based or random
