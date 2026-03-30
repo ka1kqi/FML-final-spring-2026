@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+venv/
+
+# Data files (large, git-ignored) but keep directory structure
+data/raw/*.json
+data/processed/*.csv
+*.pkl
+
+.DS_Store
+notebooks/.ipynb_checkpoints/
