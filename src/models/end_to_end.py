@@ -172,17 +172,32 @@ class ChampionEmbedding:
     - Backward: gradients flow back to the accessed rows
     - Only rows that were looked up receive gradient updates
     """
-    def __init__(self, vocab_size, embed_dim):
+    def __init__(self, vocab_size, embed_dim, pretrained_path=None, champ_to_id=None):
         self.vocab_size = vocab_size
         self.embed_dim = embed_dim
 
-        # Xavier initialization: scale = sqrt(6 / (fan_in + fan_out))
-        # Keeps variance stable across layers
+        # Xavier initialization as fallback
         scale = (6.0 / (vocab_size + embed_dim)) ** 0.5
+        self.weight = torch.empty(vocab_size, embed_dim).uniform_(-scale, scale)
+
+        # Load pre-trained Skip-gram embeddings if available
+        # This gives the model a meaningful starting point:
+        #   "Yasuo is a mid-lane assassin" is already encoded
+        #   The model only needs to fine-tune for win prediction
+        loaded = 0
+        if pretrained_path is not None and champ_to_id is not None:
+            embed_df = pd.read_csv(pretrained_path)
+            for _, row in embed_df.iterrows():
+                name = row['champion']
+                if name in champ_to_id:
+                    vec = row[[f'd{i}' for i in range(embed_dim)]].values.astype(np.float32)
+                    self.weight.data[champ_to_id[name]] = torch.FloatTensor(vec)
+                    loaded += 1
+            print(f'  Loaded pre-trained embeddings for {loaded}/{vocab_size} champions')
 
         # requires_grad=True tells PyTorch to track all operations
         # on this tensor and compute gradients during backward pass
-        self.weight = torch.empty(vocab_size, embed_dim).uniform_(-scale, scale).requires_grad_(True)
+        self.weight = self.weight.requires_grad_(True)
 
     def __call__(self, ids):
         """
@@ -300,13 +315,18 @@ class TransformerBlock(nn.Module):
 # ================================================================
 
 class EndToEndSetTransformer(nn.Module):
-    def __init__(self, vocab_size, d_model=64, num_heads=4, num_layers=2, dropout=0.1):
+    def __init__(self, vocab_size, d_model=64, num_heads=4, num_layers=2, dropout=0.1,
+                 pretrained_path=None, champ_to_id=None):
         super().__init__()
 
         # Hand-written learnable embedding (NOT nn.Embedding)
-        # Gradients from loss propagate back through attention layers
-        # all the way to these embedding vectors
-        self.embedding = ChampionEmbedding(vocab_size, d_model)
+        # If pretrained_path is given, initialize from Skip-gram embeddings
+        # Then fine-tune end-to-end with a smaller learning rate
+        self.embedding = ChampionEmbedding(
+            vocab_size, d_model,
+            pretrained_path=pretrained_path,
+            champ_to_id=champ_to_id
+        )
 
         self.d_model = d_model
 
@@ -399,27 +419,38 @@ class EndToEndSetTransformer(nn.Module):
 # ================================================================
 
 print('\n' + '=' * 60)
-print('  End-to-End Set Transformer')
+print('  End-to-End Set Transformer (Pre-train + Fine-tune)')
 print('=' * 60)
+
+# Load pre-trained Skip-gram embeddings as initialization
+embed_file = PROJECT_ROOT / 'data/champion_embeddings.csv'
+print(f'  Pre-trained embedding: {embed_file.name}')
 
 model = EndToEndSetTransformer(
     vocab_size=vocab_size,
     d_model=64,
     num_heads=4,
     num_layers=2,
-    dropout=0.15
+    dropout=0.15,
+    pretrained_path=embed_file,
+    champ_to_id=champ_to_id
 )
 
 criterion = nn.BCELoss()
 
-# Combine nn.Module params + hand-written embedding params
-# model.parameters() only returns nn.Module parameters (attention, MLP, etc.)
-# model.embedding.parameters() returns our hand-written weight tensor
-all_params = list(model.parameters()) + model.embedding.parameters()
+# Differential learning rates (key to fine-tuning):
+#   - Embedding: small LR (0.0001) → gently adjust pre-trained knowledge
+#   - Attention + MLP: normal LR (0.001) → learn from scratch
+#
+# Why? Pre-trained embedding already knows "Yasuo = assassin"
+# Large LR would destroy this structure (catastrophic forgetting)
+# Small LR preserves structure while adapting for win prediction
+optimizer = optim.AdamW([
+    {'params': model.embedding.parameters(), 'lr': 0.0001},  # fine-tune gently
+    {'params': list(model.parameters()), 'lr': 0.001},       # learn from scratch
+], weight_decay=1e-4)
 
-# AdamW = Adam + weight decay (L2 regularization)
-# weight_decay prevents parameters from growing too large -> reduces overfitting
-optimizer = optim.AdamW(all_params, lr=0.001, weight_decay=1e-4)
+all_params = list(model.parameters()) + model.embedding.parameters()
 
 # Learning rate scheduler: reduce LR when loss plateaus
 # When loss stops decreasing, multiply LR by factor (0.5)
@@ -613,7 +644,8 @@ print('  Model Comparison')
 print('=' * 60)
 print(f'  MLP + mean pool (frozen emb):       ~51.8%')
 print(f'  Set Transformer (frozen emb):       ~51.7%')
-print(f'  End-to-End Set Transformer:         {best_test_acc:.1%}')
+print(f'  End-to-End (random init):           ~50.8%  (overfit)')
+print(f'  Pre-train + Fine-tune:              {best_test_acc:.1%}')
 print(f'  Delta vs MLP:                       {(best_test_acc - 0.518)*100:+.1f}%')
 print('=' * 60)
 
