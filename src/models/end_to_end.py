@@ -652,3 +652,135 @@ print('=' * 60)
 # Save model
 torch.save(model.state_dict(), PROJECT_ROOT / 'data/processed/e2e_model.pth')
 print(f'\nModel saved to data/processed/e2e_model.pth')
+
+
+# ================================================================
+# THEORETICAL EXPLANATION: End-to-End Set Transformer for Win Prediction
+# ================================================================
+#
+# 1. MOTIVATION
+#    Traditional approaches treat embedding and classification as separate
+#    stages: first learn champion embeddings via Word2Vec / Skip-gram on
+#    co-occurrence data, then freeze them and train a classifier on top.
+#    This is sub-optimal because the embedding was never told what the
+#    downstream task is -- it only knows "who appears with whom", not
+#    "who together leads to winning".
+#
+#    End-to-end training solves this by making the embedding layer a
+#    differentiable part of the prediction pipeline, so gradients from
+#    the binary cross-entropy loss propagate all the way back into the
+#    embedding weight matrix. The embedding thus learns representations
+#    that are directly optimized for win prediction.
+#
+# 2. ARCHITECTURE OVERVIEW
+#
+#    Input:  blue_ids [B, 5]   red_ids [B, 5]   (integer champion IDs)
+#             |                   |
+#    Embedding Lookup (hand-written, shared weights)
+#             |                   |
+#            [B, 5, 64]         [B, 5, 64]
+#             |                   |
+#    Self-Attention x N  (each team attends to its own members)
+#             |                   |
+#    Cross-Attention     (each team attends to the opposing team)
+#             |                   |
+#    Attention Pooling   (aggregate 5 champion vectors -> 1 team vector)
+#             |                   |
+#            [B, 64]            [B, 64]
+#              \                /
+#               Concatenate [B, 128]
+#                     |
+#               MLP Classifier
+#                     |
+#               P(blue wins) [B, 1]
+#
+# 3. KEY COMPONENTS
+#
+#    a) Hand-Written Embedding
+#       Instead of using nn.Embedding, we manually create a weight matrix
+#       of shape [vocab_size, embed_dim] with requires_grad=True. The
+#       forward pass is simply weight[ids] (fancy indexing). PyTorch's
+#       autograd tracks this operation so that during backpropagation,
+#       only the rows corresponding to the champions in the current batch
+#       receive gradient updates. This is mathematically equivalent to
+#       nn.Embedding but gives us full visibility into how it works.
+#
+#    b) Pre-trained Initialization + Fine-tuning
+#       We initialize the embedding matrix with Skip-gram vectors trained
+#       on champion co-occurrence. This provides a meaningful starting
+#       point: the model already knows that Yasuo is a mid-lane assassin
+#       and Jinx is a bot-lane marksman. We then fine-tune with a small
+#       learning rate (0.0001 vs 0.001 for other layers) to gently adapt
+#       these representations for win prediction without catastrophic
+#       forgetting of the co-occurrence structure.
+#
+#    c) Self-Attention (Intra-Team Interaction)
+#       Each champion in a team attends to all other teammates. This lets
+#       the model capture synergies (e.g., Yasuo + Malphite knock-up combo)
+#       and redundancies (e.g., two assassins competing for the same role).
+#       Formally:  Attention(Q, K, V) = softmax(QK^T / sqrt(d)) * V
+#       where Q = K = V = team embeddings (self-attention).
+#
+#    d) Cross-Attention (Inter-Team Interaction)
+#       After self-attention, each team attends to the opposing team.
+#       Query = our team, Key = Value = opponent team. This allows the
+#       model to learn matchup-dependent representations: the same
+#       champion may be strong against one composition but weak against
+#       another. Cross-attention is what makes this model composition-aware
+#       rather than just counting individual champion strengths.
+#
+#    e) Attention Pooling (Set Aggregation)
+#       A learnable query vector (the "seed") attends over all 5 champion
+#       representations to produce a single team-level vector. Unlike mean
+#       pooling which weights all champions equally, attention pooling can
+#       learn that the carry champion matters more than the support in
+#       determining overall team strength. This is the "Set Transformer"
+#       idea from Lee et al. (2019): treating a team as an unordered set
+#       and using attention to aggregate it.
+#
+#    f) Classification Head
+#       The blue and red team vectors [B, 64] are concatenated to form
+#       [B, 128], then passed through a 3-layer MLP (128 -> 64 -> 1)
+#       with ReLU activations and dropout. The final sigmoid outputs
+#       P(blue wins) in [0, 1], trained with binary cross-entropy loss.
+#
+# 4. TRAINING STRATEGY
+#
+#    - Optimizer: AdamW with differential learning rates
+#        * Embedding: lr=0.0001 (preserve pre-trained structure)
+#        * All other layers: lr=0.001 (learn from scratch)
+#    - Scheduler: ReduceLROnPlateau (halve LR when loss stalls)
+#    - Gradient clipping: max_norm=1.0 (prevent exploding gradients)
+#    - Early stopping: patience=30 epochs (prevent overfitting)
+#    - Regularization: dropout=0.15 + weight_decay=1e-4
+#
+# 5. WHY "END-TO-END" MATTERS
+#
+#    In a frozen-embedding pipeline, the embedding captures co-occurrence
+#    patterns (which champions are picked together) but has no notion of
+#    winning. The classifier must work with whatever features the embedding
+#    provides, even if they are not the most informative for the task.
+#
+#    In end-to-end training, the loss signal (did blue win?) reshapes the
+#    embedding space itself. Champions that contribute to winning are
+#    pushed closer together; detrimental pairings are pushed apart. The
+#    attention layers and the embedding co-adapt, leading to richer
+#    representations that are directly useful for prediction.
+#
+#    Empirically, pre-train + fine-tune outperforms both frozen-embedding
+#    approaches and training from random initialization, because:
+#    - Random init has too little structure to learn from limited data
+#    - Frozen embeddings have the wrong structure (co-occurrence != winning)
+#    - Pre-train + fine-tune starts with good structure and refines it
+#
+# 6. RELATION TO SET TRANSFORMER (Lee et al., 2019)
+#
+#    The Set Transformer treats input as a SET (order does not matter).
+#    A team of 5 champions {A, B, C, D, E} is the same regardless of
+#    input ordering. Self-attention is permutation-equivariant (swapping
+#    input order swaps output order correspondingly), and attention
+#    pooling is permutation-invariant (output is the same regardless of
+#    input order). This is the correct inductive bias for team composition
+#    prediction, since pick order does not affect in-game performance.
+#
+# ================================================================
