@@ -12,17 +12,17 @@ def champion_win_rates(df: pd.DataFrame) -> dict[int, float]:
     raise NotImplementedError
 
 
-def synergy_matrix(df: pd.DataFrame, num_champions: int = 170) -> np.ndarray:
+def synergy_matrix(df: pd.DataFrame, num_champions: int = 172) -> np.ndarray:
     """Build an NxN matrix of ally-ally pairwise win rates."""
     raise NotImplementedError
 
 
-def counter_matrix(df: pd.DataFrame, num_champions: int = 170) -> np.ndarray:
+def counter_matrix(df: pd.DataFrame, num_champions: int = 172) -> np.ndarray:
     """Build an NxN matrix of ally-vs-enemy pairwise win rates."""
     raise NotImplementedError
 
 
-def ban_features(bans: list[int], num_champions: int = 170) -> np.ndarray:
+def ban_features(bans: list[int], num_champions: int = 172) -> np.ndarray:
     """Encode team bans as a binary vector."""
     raise NotImplementedError
 

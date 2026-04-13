@@ -50,7 +50,7 @@ git clone https://github.com/<your-org>/ml-final.git
 cd ml-final
 
 # 2. Create a virtual environment
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 
 # 3. Install dependencies

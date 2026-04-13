@@ -5,12 +5,16 @@ riot_api:
   divisions: ["I", "II", "III", "IV"]
 
 collection:
-  max_matches_per_player: 50
+  max_matches_per_player: 20
+  max_seed_players: 4000  # Keep local crawl size manageable; increase gradually as needed
+  store_raw_json: false   # Save disk by exporting directly to CSV during crawl
+  csv_output_path: "data/processed/compositions_stats.csv"
   min_game_duration: 900  # 15 minutes in seconds
   min_remake_duration: 180  # 3 minutes
+  require_valid_position: true
 
 features:
-  num_champions: 170
+  num_champions: 172
   champion_embedding_dim: 32
 
 training:
