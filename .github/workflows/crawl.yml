@@ -29,14 +29,16 @@ jobs:
         run: python -m src.collection.match_crawler
 
       - name: Save cached data
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: data/raw
           key: crawler-data-${{ github.run_number }}
 
       - name: Upload data as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: match-data
+          name: match-data-${{ github.run_number }}
           path: data/raw/
           retention-days: 90
