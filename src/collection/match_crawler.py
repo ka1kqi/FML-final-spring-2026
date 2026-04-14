@@ -105,13 +105,22 @@ def seed_players(region: str, tier: str, divisions: list[str]) -> list[str]:
             if entries is None:
                 continue
             logger.info("  Got %d entries for %s %s", len(entries), tier, div)
+            if entries:
+                logger.info("  Entry keys: %s", list(entries[0].keys()))
 
             for i, entry in enumerate(entries):
-                sid = entry["summonerId"]
-                puuid = _api_call_with_retry(get_puuid, client, region, sid)
-                if puuid is None:
-                    ckpt["failures"].append({"type": "puuid", "summonerId": sid})
-                    continue
+                # Modern league-v4 includes puuid directly; fall back to summoner lookup
+                puuid = entry.get("puuid")
+                if not puuid:
+                    sid = entry.get("summonerId")
+                    if not sid:
+                        logger.warning("Entry missing both puuid and summonerId, skipping")
+                        continue
+                    puuid = _api_call_with_retry(get_puuid, client, region, sid)
+                    if puuid is None:
+                        ckpt["failures"].append({"type": "puuid", "summonerId": sid})
+                        continue
+
                 if puuid not in existing_puuids:
                     puuids.append(puuid)
                     existing_puuids.add(puuid)
