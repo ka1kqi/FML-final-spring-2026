@@ -182,7 +182,7 @@ def crawl_matches(puuids: list[str], max_per_player: int = 50, max_match_ids: in
     return existing_ids
 
 
-def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw") -> int:
+def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetches: int = 50_000) -> int:
     """Download full match JSON for each ID and save to output_dir. Returns count saved."""
     client = get_client()
     config = _load_config()
@@ -199,6 +199,9 @@ def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw") -> int:
         existing_files.add(basename)
 
     to_fetch = [mid for mid in match_ids if mid not in existing_files]
+    if len(to_fetch) > max_fetches:
+        logger.info("Capping fetch list from %d to %d matches", len(to_fetch), max_fetches)
+        to_fetch = to_fetch[:max_fetches]
     logger.info("Fetching %d matches (%d already on disk)", len(to_fetch), len(existing_files))
 
     ckpt = _load_checkpoint()
