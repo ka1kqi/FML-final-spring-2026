@@ -142,7 +142,7 @@ def seed_players(region: str, tier: str, divisions: list[str]) -> list[str]:
     return puuids
 
 
-def crawl_matches(puuids: list[str], max_per_player: int = 50) -> set[str]:
+def crawl_matches(puuids: list[str], max_per_player: int = 50, max_match_ids: int = 60_000) -> set[str]:
     """Fetch match IDs for each PUUID and return a deduplicated set."""
     client = get_client()
     ckpt = _load_checkpoint()
@@ -154,6 +154,10 @@ def crawl_matches(puuids: list[str], max_per_player: int = 50) -> set[str]:
 
     try:
         for i, puuid in enumerate(puuids):
+            if len(existing_ids) >= max_match_ids:
+                logger.info("Reached %d match IDs (target: %d) — moving to fetch phase", len(existing_ids), max_match_ids)
+                break
+
             ids = _api_call_with_retry(
                 get_match_ids, client, region, puuid,
                 count=max_per_player, queue=queue_id,
