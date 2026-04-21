@@ -23,7 +23,9 @@ jobs:
           path: |
             data/raw
             data/raw/timelines
-          key: crawler-data
+          key: crawler-data-
+          restore-keys: |
+            crawler-data-
 
       - name: Run crawler
         env:
