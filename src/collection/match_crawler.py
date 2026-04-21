@@ -18,6 +18,7 @@ from src.collection.riot_api import (
     get_puuid,
     get_match_ids,
     get_match_data,
+    get_match_timeline,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,14 +184,18 @@ def crawl_matches(puuids: list[str], max_per_player: int = 50, max_match_ids: in
 
 
 def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetches: int = 50_000) -> int:
-    """Download full match JSON for each ID and save to output_dir. Returns count saved."""
+    """Download full match JSON + timeline for each ID and save to output_dir. Returns count saved."""
     client = get_client()
     config = _load_config()
     region = config["riot_api"]["region"]
     min_duration = config["collection"]["min_game_duration"]
     min_remake = config["collection"]["min_remake_duration"]
+    fetch_timelines = config["collection"].get("fetch_timelines", True)
 
     os.makedirs(output_dir, exist_ok=True)
+    timeline_dir = os.path.join(output_dir, "timelines")
+    if fetch_timelines:
+        os.makedirs(timeline_dir, exist_ok=True)
 
     # Scan existing files to skip already-downloaded matches
     existing_files = set()
@@ -234,6 +239,17 @@ def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetch
                 json.dump(data, f)
             saved += 1
 
+            # Fetch timeline (separate API call)
+            if fetch_timelines:
+                tl_path = os.path.join(timeline_dir, f"{match_id}.json")
+                if not os.path.exists(tl_path):
+                    timeline = _api_call_with_retry(get_match_timeline, client, region, match_id)
+                    if timeline is not None:
+                        with open(tl_path, "w") as f:
+                            json.dump(timeline, f)
+                    else:
+                        ckpt["failures"].append({"type": "timeline", "matchId": match_id})
+
             if (i + 1) % 200 == 0:
                 ckpt["fetched_ids"] = list(existing_files | processed_ids)
                 _save_checkpoint(ckpt)
@@ -251,11 +267,54 @@ def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetch
     return saved
 
 
+def backfill_timelines(output_dir: str = "data/raw", max_fetches: int = 50_000) -> int:
+    """Fetch timelines for matches that were collected without them."""
+    client = get_client()
+    config = _load_config()
+    region = config["riot_api"]["region"]
+
+    timeline_dir = os.path.join(output_dir, "timelines")
+    os.makedirs(timeline_dir, exist_ok=True)
+
+    # Find matches missing timelines
+    match_files = glob.glob(os.path.join(output_dir, "*.json"))
+    existing_timelines = set()
+    for fp in glob.glob(os.path.join(timeline_dir, "*.json")):
+        existing_timelines.add(os.path.basename(fp).replace(".json", ""))
+
+    to_backfill = []
+    for fp in match_files:
+        mid = os.path.basename(fp).replace(".json", "")
+        if mid not in existing_timelines:
+            to_backfill.append(mid)
+
+    if len(to_backfill) > max_fetches:
+        to_backfill = to_backfill[:max_fetches]
+
+    logger.info("Backfilling timelines: %d matches need timelines (%d already have them)",
+                len(to_backfill), len(existing_timelines))
+
+    fetched = 0
+    for i, match_id in enumerate(to_backfill):
+        timeline = _api_call_with_retry(get_match_timeline, client, region, match_id)
+        if timeline is not None:
+            tl_path = os.path.join(timeline_dir, f"{match_id}.json")
+            with open(tl_path, "w") as f:
+                json.dump(timeline, f)
+            fetched += 1
+
+        if (i + 1) % 200 == 0:
+            logger.info("  Timeline backfill: %d/%d fetched", fetched, i + 1)
+
+    logger.info("Timeline backfill complete: %d fetched", fetched)
+    return fetched
+
+
 # ── orchestrator ─────────────────────────────────────────────────────────────
 
 
 def run_pipeline(config_path: str = "configs/config.yaml") -> None:
-    """End-to-end: seed → crawl → fetch → store."""
+    """End-to-end: seed → crawl → fetch → store → backfill timelines."""
     load_dotenv()
     config = _load_config(config_path)
 
@@ -289,15 +348,21 @@ def run_pipeline(config_path: str = "configs/config.yaml") -> None:
     if ckpt["phase"] in ("crawl", "fetch"):
         ckpt = _load_checkpoint()  # re-read after crawl
     if ckpt["phase"] in ("fetch",):
-        logger.info("═══ Phase 3: Fetching match data ═══")
+        logger.info("═══ Phase 3: Fetching match data + timelines ═══")
         saved = fetch_and_store(match_ids)
         logger.info("Pipeline complete — %d matches saved to data/raw/", saved)
     elif ckpt["phase"] == "done":
-        logger.info("Pipeline already complete. Delete %s to re-run.", CHECKPOINT_PATH)
+        logger.info("Pipeline already complete — running timeline backfill.")
+        backfill_timelines()
     else:
-        logger.info("═══ Phase 3: Fetching match data ═══")
+        logger.info("═══ Phase 3: Fetching match data + timelines ═══")
         saved = fetch_and_store(match_ids)
         logger.info("Pipeline complete — %d matches saved to data/raw/", saved)
+
+    # Always attempt timeline backfill for previously collected matches
+    ckpt = _load_checkpoint()
+    if ckpt["phase"] == "done" and collection.get("fetch_timelines", True):
+        backfill_timelines()
 
 
 if __name__ == "__main__":

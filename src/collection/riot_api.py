@@ -63,3 +63,9 @@ def get_match_data(client: LolWatcher, region: str, match_id: str) -> dict:
     """Fetch the full match-v5 DTO for a single match."""
     regional = PLATFORM_TO_REGION.get(region, "americas")
     return client.match.by_id(regional, match_id)
+
+
+def get_match_timeline(client: LolWatcher, region: str, match_id: str) -> dict:
+    """Fetch the match-v5 timeline DTO (per-minute frames + events)."""
+    regional = PLATFORM_TO_REGION.get(region, "americas")
+    return client.match.timeline_by_match(regional, match_id)
