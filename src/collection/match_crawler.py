@@ -3,6 +3,7 @@ Seeds ranked players from league-v4, crawls their match histories,
 deduplicates match IDs, fetches full match data, and writes raw JSON to disk.
 """
 
+import gzip
 import json
 import glob
 import logging
@@ -183,8 +184,37 @@ def crawl_matches(puuids: list[str], max_per_player: int = 50, max_match_ids: in
     return existing_ids
 
 
+def _write_json_gz(path: str, data: dict) -> None:
+    """Write a dict as gzipped JSON."""
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def _scan_match_ids(directory: str, pattern: str = "*.json*") -> set[str]:
+    """Scan directory for match IDs, handling both .json and .json.gz files."""
+    ids = set()
+    for fp in glob.glob(os.path.join(directory, pattern)):
+        basename = os.path.basename(fp).replace(".json.gz", "").replace(".json", "")
+        ids.add(basename)
+    return ids
+
+
+def _compress_existing(directory: str) -> int:
+    """Compress any uncompressed .json files to .json.gz and remove originals."""
+    compressed = 0
+    for fp in glob.glob(os.path.join(directory, "*.json")):
+        gz_path = fp + ".gz"
+        if not os.path.exists(gz_path):
+            with open(fp, "rb") as f_in:
+                with gzip.open(gz_path, "wb") as f_out:
+                    f_out.write(f_in.read())
+        os.remove(fp)
+        compressed += 1
+    return compressed
+
+
 def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetches: int = 50_000) -> int:
-    """Download full match JSON + timeline for each ID and save to output_dir. Returns count saved."""
+    """Download full match JSON + timeline for each ID and save gzipped to output_dir. Returns count saved."""
     client = get_client()
     config = _load_config()
     region = config["riot_api"]["region"]
@@ -197,11 +227,13 @@ def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetch
     if fetch_timelines:
         os.makedirs(timeline_dir, exist_ok=True)
 
-    # Scan existing files to skip already-downloaded matches
-    existing_files = set()
-    for fp in glob.glob(os.path.join(output_dir, "*.json")):
-        basename = os.path.basename(fp).replace(".json", "")
-        existing_files.add(basename)
+    # Compress any uncompressed files from previous runs to reclaim disk
+    n = _compress_existing(output_dir)
+    if n:
+        logger.info("Compressed %d existing .json files to .json.gz", n)
+
+    # Scan existing files to skip already-downloaded matches (.json and .json.gz)
+    existing_files = _scan_match_ids(output_dir)
 
     to_fetch = [mid for mid in match_ids if mid not in existing_files]
     if len(to_fetch) > max_fetches:
@@ -234,19 +266,19 @@ def fetch_and_store(match_ids: set[str], output_dir: str = "data/raw", max_fetch
             if queue != config["riot_api"]["queue_id"]:
                 continue
 
-            out_path = os.path.join(output_dir, f"{match_id}.json")
-            with open(out_path, "w") as f:
-                json.dump(data, f)
+            _write_json_gz(os.path.join(output_dir, f"{match_id}.json.gz"), data)
             saved += 1
 
             # Fetch timeline (separate API call)
             if fetch_timelines:
-                tl_path = os.path.join(timeline_dir, f"{match_id}.json")
-                if not os.path.exists(tl_path):
+                tl_exists = (
+                    os.path.exists(os.path.join(timeline_dir, f"{match_id}.json.gz"))
+                    or os.path.exists(os.path.join(timeline_dir, f"{match_id}.json"))
+                )
+                if not tl_exists:
                     timeline = _api_call_with_retry(get_match_timeline, client, region, match_id)
                     if timeline is not None:
-                        with open(tl_path, "w") as f:
-                            json.dump(timeline, f)
+                        _write_json_gz(os.path.join(timeline_dir, f"{match_id}.json.gz"), timeline)
                     else:
                         ckpt["failures"].append({"type": "timeline", "matchId": match_id})
 
@@ -276,17 +308,11 @@ def backfill_timelines(output_dir: str = "data/raw", max_fetches: int = 50_000) 
     timeline_dir = os.path.join(output_dir, "timelines")
     os.makedirs(timeline_dir, exist_ok=True)
 
-    # Find matches missing timelines
-    match_files = glob.glob(os.path.join(output_dir, "*.json"))
-    existing_timelines = set()
-    for fp in glob.glob(os.path.join(timeline_dir, "*.json")):
-        existing_timelines.add(os.path.basename(fp).replace(".json", ""))
+    # Find matches missing timelines (check both .json and .json.gz)
+    match_ids = _scan_match_ids(output_dir)
+    existing_timelines = _scan_match_ids(timeline_dir)
 
-    to_backfill = []
-    for fp in match_files:
-        mid = os.path.basename(fp).replace(".json", "")
-        if mid not in existing_timelines:
-            to_backfill.append(mid)
+    to_backfill = [mid for mid in match_ids if mid not in existing_timelines]
 
     if len(to_backfill) > max_fetches:
         to_backfill = to_backfill[:max_fetches]
@@ -298,9 +324,7 @@ def backfill_timelines(output_dir: str = "data/raw", max_fetches: int = 50_000) 
     for i, match_id in enumerate(to_backfill):
         timeline = _api_call_with_retry(get_match_timeline, client, region, match_id)
         if timeline is not None:
-            tl_path = os.path.join(timeline_dir, f"{match_id}.json")
-            with open(tl_path, "w") as f:
-                json.dump(timeline, f)
+            _write_json_gz(os.path.join(timeline_dir, f"{match_id}.json.gz"), timeline)
             fetched += 1
 
         if (i + 1) % 200 == 0:
