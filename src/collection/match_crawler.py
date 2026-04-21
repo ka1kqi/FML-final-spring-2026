@@ -350,6 +350,20 @@ def run_pipeline(config_path: str = "configs/config.yaml") -> None:
 
     ckpt = _load_checkpoint()
 
+    # Allow forcing a start phase via env var (set by workflow_dispatch input)
+    force_phase = os.environ.get("CRAWLER_START_PHASE", "").strip()
+    if force_phase:
+        valid_phases = ("seed", "crawl", "fetch", "backfill")
+        if force_phase not in valid_phases:
+            logger.error("Invalid start phase '%s' — must be one of %s", force_phase, valid_phases)
+        else:
+            logger.info("Forcing start phase to '%s' (was '%s')", force_phase, ckpt["phase"])
+            if force_phase == "backfill":
+                ckpt["phase"] = "done"
+            else:
+                ckpt["phase"] = force_phase
+            _save_checkpoint(ckpt)
+
     # Phase 1: Seed players
     if ckpt["phase"] in ("seed",):
         logger.info("═══ Phase 1: Seeding players ═══")
