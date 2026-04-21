@@ -1,0 +1,50 @@
+name: Riot Crawler
+
+on:
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore cached data
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/raw
+            data/raw/timelines
+          key: crawler-data-
+          restore-keys: |
+            crawler-data-
+
+      - name: Run crawler
+        env:
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
+        run: python -m src.collection.match_crawler
+
+      - name: Save cached data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/raw
+            data/raw/timelines
+          key: crawler-data-${{ github.run_number }}
+
+      - name: Upload data as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: match-data-${{ github.run_number }}
+          path: data/raw/
+          retention-days: 90

@@ -8,6 +8,7 @@ collection:
   max_matches_per_player: 50
   min_game_duration: 900  # 15 minutes in seconds
   min_remake_duration: 180  # 3 minutes
+  fetch_timelines: true  # per-minute frames + events from match-v5 timeline endpoint
 
 features:
   num_champions: 170
