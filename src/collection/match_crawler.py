@@ -380,7 +380,12 @@ def run_pipeline(config_path: str = "configs/config.yaml") -> None:
         match_ids = crawl_matches(puuids, max_per_player=collection["max_matches_per_player"])
     else:
         match_ids = set(ckpt.get("match_ids", []))
-        logger.info("Skipping crawl phase (%d match IDs from checkpoint)", len(match_ids))
+        # Also pick up match IDs from files already on disk (handles forced phase skip)
+        on_disk = _scan_match_ids("data/raw")
+        if on_disk - match_ids:
+            logger.info("Found %d additional match IDs on disk not in checkpoint", len(on_disk - match_ids))
+            match_ids |= on_disk
+        logger.info("Skipping crawl phase (%d match IDs total)", len(match_ids))
 
     # Phase 3: Fetch and store
     if ckpt["phase"] in ("crawl", "fetch"):
