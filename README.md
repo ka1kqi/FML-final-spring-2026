@@ -109,3 +109,15 @@ cp .env.example .env
 - [Riot Developer API Docs](https://developer.riotgames.com/apis)
 - [LoLDraftAI — Draft Prediction Model](https://loldraftai.com/blog/loldraftai-explained)
 - [MDPI 2025 — Ensemble ML for LoL Win Prediction](https://www.mdpi.com/2076-3417/15/10/5241)
+
+---
+
+## Quick Test Commands
+
+```bash
+# Benchmark Logistic Regression, Random Forest, and End-to-End model
+python3 -m src.models.benchmark_models
+
+# Launch interactive draft simulator web app
+streamlit run app/streamlit_app.py
+```
