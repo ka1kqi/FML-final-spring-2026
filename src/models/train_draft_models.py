@@ -5,11 +5,11 @@ Usage:
     python -m src.models.train_draft_models
 
 Steps:
-    1. Load compositions_50k.csv
-    2. Train Champion2Vec embeddings from scratch (skip-gram)
-    3. Compute champion win rates
+    1. Load compositions_s16.csv
+    2. Train Performance Embeddings (Custom Matrix Factorization)
+    3. Compute champion average comp scores
     4. Build draft training features (simulating draft order)
-    5. Train LightGBM classifier
+    5. Train HistGradientBoostingRegressor
     6. Evaluate and print metrics
     7. Save everything to data/processed/draft_models/
 """
@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from src.models.train_embeddings import train_champion2vec, get_embed_dict, most_similar
+from src.models.train_embeddings import train_champion2vec, most_similar
 from src.features.synergy_features import compute_champion_scores
 from src.models.draft_classifier import (
     build_training_data, train_draft_model, evaluate_model, save_draft_model,

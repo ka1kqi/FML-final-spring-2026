@@ -79,12 +79,12 @@ def compute_champion_scores(comp_df):
     Compute per-champion average composition scores from historical match data.
 
     Args:
-        comp_df: DataFrame with columns [champion_name, comp_score, ...]
+        comp_df: DataFrame with columns [champion_name, champ_score, ...]
 
     Returns:
-        dict[str, float] — champion_name -> average comp_score
+        dict[str, float] — champion_name -> average champ_score
     """
-    grouped = comp_df.groupby("champion_name")["comp_score"].agg(["sum", "count"])
+    grouped = comp_df.groupby("champion_name")["champ_score"].agg(["sum", "count"])
     champ_scores = {}
     for name, row in grouped.iterrows():
         champ_scores[name] = float(row["sum"] / row["count"]) if row["count"] > 0 else 50.0

@@ -32,9 +32,8 @@ def build_performance_matrices(comp_df, vocab):
         blue_champs = blue["champion_name"].tolist()
         red_champs = red["champion_name"].tolist()
         
-        # Use first row's score since all players on team share the comp_score
-        blue_score = float(blue["comp_score"].iloc[0])
-        red_score = float(red["comp_score"].iloc[0])
+        blue_scores = blue["champ_score"].tolist()
+        red_scores = red["champ_score"].tolist()
         
         # Filter strictly to vocab
         if not all(c in champ_to_idx for c in blue_champs + red_champs):
@@ -45,30 +44,32 @@ def build_performance_matrices(comp_df, vocab):
             for j in range(i+1, 5):
                 idx_i = champ_to_idx[blue_champs[i]]
                 idx_j = champ_to_idx[blue_champs[j]]
-                syn_sum[idx_i, idx_j] += blue_score
-                syn_sum[idx_j, idx_i] += blue_score
+                # Asymmetric addition: Yasuo's score when Malphite is ally
+                syn_sum[idx_i, idx_j] += blue_scores[i]
+                # Malphite's score when Yasuo is ally
+                syn_sum[idx_j, idx_i] += blue_scores[j]
                 syn_count[idx_i, idx_j] += 1
                 syn_count[idx_j, idx_i] += 1
                 
                 idx_ri = champ_to_idx[red_champs[i]]
                 idx_rj = champ_to_idx[red_champs[j]]
-                syn_sum[idx_ri, idx_rj] += red_score
-                syn_sum[idx_rj, idx_ri] += red_score
+                syn_sum[idx_ri, idx_rj] += red_scores[i]
+                syn_sum[idx_rj, idx_ri] += red_scores[j]
                 syn_count[idx_ri, idx_rj] += 1
                 syn_count[idx_rj, idx_ri] += 1
                 
         # Matchup
-        for b in blue_champs:
-            for r in red_champs:
+        for i, b in enumerate(blue_champs):
+            for j, r in enumerate(red_champs):
                 idx_b = champ_to_idx[b]
                 idx_r = champ_to_idx[r]
                 
-                # B vs R -> blue score
-                match_sum[idx_b, idx_r] += blue_score
+                # B vs R -> blue score for champion B
+                match_sum[idx_b, idx_r] += blue_scores[i]
                 match_count[idx_b, idx_r] += 1
                 
-                # R vs B -> red score
-                match_sum[idx_r, idx_b] += red_score
+                # R vs B -> red score for champion R
+                match_sum[idx_r, idx_b] += red_scores[j]
                 match_count[idx_r, idx_b] += 1
                 
     # Calculate means
@@ -167,9 +168,6 @@ def train_champion2vec(comp_df, embed_dim=64):
     return embed_dict, vocab
 
 
-def get_embed_dict(vocab, weights):
-    """Helper to reconstruct dict from saved npz."""
-    return {w: weights[i] for i, w in enumerate(vocab)}
 
 
 def most_similar(query_champ, embed_dict, top_k=5):

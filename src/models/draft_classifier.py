@@ -45,9 +45,9 @@ def build_training_data(comp_df, embed_dict, champ_scores):
 
         blue_names = blue["champion_name"].tolist()
         red_names = red["champion_name"].tolist()
-        # Team score is the same for all players on the team, just grab the first
-        blue_score = float(blue["comp_score"].iloc[0])
-        red_score = float(red["comp_score"].iloc[0])
+        
+        blue_scores = blue["champ_score"].tolist()
+        red_scores = red["champ_score"].tolist()
 
         if not all(n in embed_dict for n in blue_names + red_names):
             skipped += 1
@@ -61,12 +61,12 @@ def build_training_data(comp_df, embed_dict, champ_scores):
                 champ = blue_names[slot]
                 allies = list(blue_picked_so_far)
                 enemies = list(red_picked_so_far)
-                label = blue_score
+                label = blue_scores[slot]
             else:
                 champ = red_names[slot]
                 allies = list(red_picked_so_far)
                 enemies = list(blue_picked_so_far)
-                label = red_score
+                label = red_scores[slot]
 
             features = build_candidate_features(
                 champ, allies, enemies, embed_dict, champ_scores

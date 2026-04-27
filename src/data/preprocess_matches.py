@@ -17,51 +17,40 @@ def preprocess_matches():
     print(f"Found {len(s16_df)} player records from Season 16.")
     
     # Group by match and team
-    print("Aggregating team stats...")
-    team_stats = s16_df.groupby(['matchId', 'teamId', 'win']).agg({
-        'kills': 'sum',
-        'deaths': 'sum',
-        'assists': 'sum',
-        'goldEarned': 'sum',
-        'totalDamageDealtToChampions': 'sum',
-        'gameDuration': 'first',
-        'team_dragon_kills': 'first',
-        'team_baron_kills': 'first',
-        'team_tower_kills': 'first'
-    }).reset_index()
+    print("Extracting individual stats...")
     
-    # Calculate per-minute and ratio stats
-    team_stats['gpm'] = team_stats['goldEarned'] / (team_stats['gameDuration'] / 60.0)
-    team_stats['dpm'] = team_stats['totalDamageDealtToChampions'] / (team_stats['gameDuration'] / 60.0)
-    team_stats['kda'] = (team_stats['kills'] + team_stats['assists']) / team_stats['deaths'].clip(lower=1)
+    # Calculate per-minute and ratio stats for each individual player
+    s16_df['gpm'] = s16_df['goldEarned'] / (s16_df['gameDuration'] / 60.0)
+    s16_df['dpm'] = s16_df['totalDamageDealtToChampions'] / (s16_df['gameDuration'] / 60.0)
+    s16_df['kda'] = (s16_df['kills'] + s16_df['assists']) / s16_df['deaths'].clip(lower=1)
     
-    # Z-score normalize the metrics across all teams
+    # Z-score normalize the metrics across all players
     for col in ['gpm', 'dpm', 'kda', 'team_dragon_kills', 'team_tower_kills']:
-        team_stats[f'{col}_z'] = (team_stats[col] - team_stats[col].mean()) / team_stats[col].std()
+        s16_df[f'{col}_z'] = (s16_df[col] - s16_df[col].mean()) / s16_df[col].std()
         
     # Composite score
     # Win brings a flat +5 or 0 base
-    team_stats['raw_comp_score'] = (
-        team_stats['win'].astype(int) * 5.0 +
-        team_stats['kda_z'] * 1.5 +
-        team_stats['gpm_z'] * 1.0 +
-        team_stats['dpm_z'] * 1.0 +
-        team_stats['team_dragon_kills_z'] * 0.5 +
-        team_stats['team_tower_kills_z'] * 0.5
+    s16_df['raw_champ_score'] = (
+        s16_df['win'].astype(int) * 5.0 +
+        s16_df['kda_z'] * 1.5 +
+        s16_df['gpm_z'] * 1.0 +
+        s16_df['dpm_z'] * 1.0 +
+        s16_df['team_dragon_kills_z'] * 0.5 +
+        s16_df['team_tower_kills_z'] * 0.5
     )
     
     # Standardize the raw comp score so mean=0, std=1
-    score_mean = team_stats['raw_comp_score'].mean()
-    score_std = team_stats['raw_comp_score'].std()
-    team_stats['comp_score_z'] = (team_stats['raw_comp_score'] - score_mean) / score_std
+    score_mean = s16_df['raw_champ_score'].mean()
+    score_std = s16_df['raw_champ_score'].std()
+    s16_df['champ_score_z'] = (s16_df['raw_champ_score'] - score_mean) / score_std
     
     # Map to 0-100 scale: 50 is average, each std dev is 10 points
-    team_stats['comp_score'] = 50.0 + (team_stats['comp_score_z'] * 10.0)
-    team_stats['comp_score'] = team_stats['comp_score'].clip(lower=0.0, upper=100.0).round(2)
+    s16_df['champ_score'] = 50.0 + (s16_df['champ_score_z'] * 10.0)
+    s16_df['champ_score'] = s16_df['champ_score'].clip(lower=0.0, upper=100.0).round(2)
     
-    # Now merge back with the champion data to create the compositions format
+    # Now build the compositions format
     print("Formatting compositions data...")
-    comp_data = s16_df[['matchId', 'championId', 'championName', 'teamId', 'teamPosition', 'win']].copy()
+    comp_data = s16_df[['matchId', 'championId', 'championName', 'teamId', 'teamPosition', 'win', 'champ_score']].copy()
     comp_data = comp_data.rename(columns={
         'matchId': 'match_id',
         'championId': 'champion_id',
@@ -69,10 +58,6 @@ def preprocess_matches():
         'teamId': 'team_id',
         'teamPosition': 'position'
     })
-    
-    # Join the comp_score
-    scores_dict = team_stats.set_index(['matchId', 'teamId'])['comp_score'].to_dict()
-    comp_data['comp_score'] = comp_data.set_index(['match_id', 'team_id']).index.map(scores_dict)
     
     print(f"Saving to {out_file}...")
     comp_data.to_csv(out_file, index=False)
