@@ -1,0 +1,189 @@
+"""
+Performance Matrix Factorization Embeddings
+Generates champion embeddings by performing TruncatedSVD on the 
+historical Synergy and Matchup performance matrices.
+"""
+
+import numpy as np
+import pandas as pd
+from collections import defaultdict
+
+def build_performance_matrices(comp_df, vocab):
+    """
+    Builds Synergy and Matchup matrices from historical compositions.
+    Applies Bayesian smoothing to pull rare matchups toward 50.0.
+    """
+    n = len(vocab)
+    champ_to_idx = {champ: i for i, champ in enumerate(vocab)}
+    
+    # Store sums and counts to calculate averages
+    syn_sum = np.full((n, n), 50.0 * 5) # Bayesian prior: 5 games of 50.0 score
+    syn_count = np.full((n, n), 5.0)
+    
+    match_sum = np.full((n, n), 50.0 * 5)
+    match_count = np.full((n, n), 5.0)
+    
+    for match_id, group in comp_df.groupby("match_id"):
+        blue = group[group["team_id"] == 100]
+        red = group[group["team_id"] == 200]
+        
+        if len(blue) != 5 or len(red) != 5: continue
+            
+        blue_champs = blue["champion_name"].tolist()
+        red_champs = red["champion_name"].tolist()
+        
+        # Use first row's score since all players on team share the comp_score
+        blue_score = float(blue["comp_score"].iloc[0])
+        red_score = float(red["comp_score"].iloc[0])
+        
+        # Filter strictly to vocab
+        if not all(c in champ_to_idx for c in blue_champs + red_champs):
+            continue
+            
+        # Synergy
+        for i in range(5):
+            for j in range(i+1, 5):
+                idx_i = champ_to_idx[blue_champs[i]]
+                idx_j = champ_to_idx[blue_champs[j]]
+                syn_sum[idx_i, idx_j] += blue_score
+                syn_sum[idx_j, idx_i] += blue_score
+                syn_count[idx_i, idx_j] += 1
+                syn_count[idx_j, idx_i] += 1
+                
+                idx_ri = champ_to_idx[red_champs[i]]
+                idx_rj = champ_to_idx[red_champs[j]]
+                syn_sum[idx_ri, idx_rj] += red_score
+                syn_sum[idx_rj, idx_ri] += red_score
+                syn_count[idx_ri, idx_rj] += 1
+                syn_count[idx_rj, idx_ri] += 1
+                
+        # Matchup
+        for b in blue_champs:
+            for r in red_champs:
+                idx_b = champ_to_idx[b]
+                idx_r = champ_to_idx[r]
+                
+                # B vs R -> blue score
+                match_sum[idx_b, idx_r] += blue_score
+                match_count[idx_b, idx_r] += 1
+                
+                # R vs B -> red score
+                match_sum[idx_r, idx_b] += red_score
+                match_count[idx_r, idx_b] += 1
+                
+    # Calculate means
+    S = syn_sum / syn_count
+    M = match_sum / match_count
+    
+    # Center the matrices around 0 (since 50 is average) to help MF
+    S = S - 50.0
+    M = M - 50.0
+    
+    return S, M
+
+class CustomMatrixFactorization:
+    """
+    Pure-numpy Matrix Factorization using Stochastic Gradient Descent (SGD).
+    Learns embeddings U and V such that U * V^T approximates the target matrix.
+    """
+    def __init__(self, n_items, n_components=32, lr=0.01, reg=0.02, epochs=50):
+        self.n_items = n_items
+        self.n_components = n_components
+        self.lr = lr
+        self.reg = reg
+        self.epochs = epochs
+        
+        scale = 1.0 / np.sqrt(n_components)
+        self.U = np.random.normal(0, scale, (n_items, n_components))
+        self.V = np.random.normal(0, scale, (n_items, n_components))
+        
+    def fit_transform(self, matrix, name=""):
+        print(f"    Training Custom MF ({name}) for {self.epochs} epochs...")
+        n_pairs = self.n_items * self.n_items
+        
+        for epoch in range(self.epochs):
+            total_error = 0.0
+            
+            # Randomize order for SGD
+            indices = np.random.permutation(n_pairs)
+            for idx in indices:
+                i = idx // self.n_items
+                j = idx % self.n_items
+                
+                target = matrix[i, j]
+                pred = np.dot(self.U[i], self.V[j])
+                err = target - pred
+                total_error += err ** 2
+                
+                u_i = self.U[i].copy()
+                v_j = self.V[j].copy()
+                
+                # Gradient update with L2 regularization
+                self.U[i] += self.lr * (err * v_j - self.reg * u_i)
+                self.V[j] += self.lr * (err * u_i - self.reg * v_j)
+            
+            if (epoch + 1) % 10 == 0:
+                rmse = np.sqrt(total_error / n_pairs)
+                print(f"      Epoch {epoch+1}/{self.epochs} | RMSE: {rmse:.4f}")
+                
+        return self.U
+
+def train_champion2vec(comp_df, embed_dim=64):
+    """
+    Generate embeddings using Custom Matrix Factorization.
+    Returns:
+        dict: champion_name -> numpy array (shape: embed_dim)
+        list: vocabulary (champion names)
+    """
+    # 1. Build vocabulary
+    vocab = sorted(comp_df["champion_name"].unique().tolist())
+    
+    # 2. Build matrices
+    print("  Building Performance Matrices...")
+    S, M = build_performance_matrices(comp_df, vocab)
+    
+    # 3. Factorize matrices
+    print("  Running Custom Matrix Factorization...")
+    half_dim = embed_dim // 2
+    n_champs = len(vocab)
+    
+    mf_syn = CustomMatrixFactorization(n_champs, n_components=half_dim, lr=0.01, reg=0.02, epochs=50)
+    syn_embeds = mf_syn.fit_transform(S, name="Synergy")
+    
+    mf_match = CustomMatrixFactorization(n_champs, n_components=half_dim, lr=0.01, reg=0.02, epochs=50)
+    match_embeds = mf_match.fit_transform(M, name="Matchup")
+    
+    # 4. Concatenate and normalize
+    # Each champion gets [32 synergy features | 32 matchup features]
+    embeddings = np.hstack([syn_embeds, match_embeds])
+    
+    # L2 Normalize
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings = embeddings / np.clip(norms, 1e-9, None)
+    
+    # 5. Build dictionary
+    embed_dict = {champ: embeddings[i] for i, champ in enumerate(vocab)}
+    
+    return embed_dict, vocab
+
+
+def get_embed_dict(vocab, weights):
+    """Helper to reconstruct dict from saved npz."""
+    return {w: weights[i] for i, w in enumerate(vocab)}
+
+
+def most_similar(query_champ, embed_dict, top_k=5):
+    """Find most similar champions by cosine similarity."""
+    if query_champ not in embed_dict:
+        return []
+
+    q_vec = embed_dict[query_champ]
+    sims = []
+    for c, vec in embed_dict.items():
+        if c == query_champ:
+            continue
+        sim = np.dot(q_vec, vec)
+        sims.append((c, float(sim)))
+
+    sims.sort(key=lambda x: x[1], reverse=True)
+    return sims[:top_k]

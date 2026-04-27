@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoL Draft Simulator</title>
+  <meta name="description" content="League of Legends champion draft simulator with ML-powered recommendations">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="draft-container">
+
+    <!-- ===== BAN PHASE BAR ===== -->
+    <div class="ban-phase">
+      <div class="ban-team-label blue">BLUE BANS</div>
+      <div class="ban-team" id="blue-bans"></div>
+      <div class="ban-separator"></div>
+      <div class="ban-team" id="red-bans"></div>
+      <div class="ban-team-label red">RED BANS</div>
+    </div>
+
+    <!-- ===== MAIN AREA ===== -->
+    <div class="main-area">
+
+      <!-- Blue Team Panel -->
+      <div class="team-panel blue">
+        <div class="team-header">Blue Team</div>
+        <div id="blue-picks"></div>
+      </div>
+
+      <!-- Center: Champion Grid -->
+      <div class="center-panel">
+        <div class="center-top">
+          <div class="phase-indicator" id="phase-indicator">BAN PHASE</div>
+          <div class="phase-text" id="phase-text">Blue team banning (0/5)</div>
+        </div>
+        <div class="search-bar">
+          <input
+            type="text"
+            class="search-input"
+            id="search-input"
+            placeholder="Search champions..."
+            oninput="setSearch(this.value)"
+          >
+          <div class="role-filters">
+            <button class="role-btn" onclick="setRoleFilter('Top')" id="filter-Top" title="Top">T</button>
+            <button class="role-btn" onclick="setRoleFilter('Jungle')" id="filter-Jungle" title="Jungle">J</button>
+            <button class="role-btn" onclick="setRoleFilter('Mid')" id="filter-Mid" title="Mid">M</button>
+            <button class="role-btn" onclick="setRoleFilter('ADC')" id="filter-ADC" title="ADC">A</button>
+            <button class="role-btn" onclick="setRoleFilter('Support')" id="filter-Support" title="Support">S</button>
+          </div>
+        </div>
+        <div class="champion-grid-container">
+          <div class="champion-grid" id="champion-grid"></div>
+        </div>
+      </div>
+
+      <!-- Red Team Panel -->
+      <div class="team-panel red">
+        <div class="team-header">Red Team</div>
+        <div id="red-picks"></div>
+      </div>
+
+    </div>
+
+    <!-- ===== BOTTOM BAR ===== -->
+    <div class="bottom-bar">
+      <div class="recommendations-panel">
+        <div class="rec-label">AI PICKS</div>
+        <div class="rec-list" id="rec-list">
+          <div style="color: var(--text-dim); font-size: 12px; padding: 8px;">
+            Recommendations appear during pick phase
+          </div>
+        </div>
+      </div>
+      <div class="action-area">
+        <button class="lock-btn ban-mode" id="lock-btn" disabled>BAN</button>
+        <button class="reset-btn" id="skip-ban-btn" onclick="skipBan()">Skip Ban</button>
+        <button class="reset-btn" onclick="resetDraft()">Reset Draft</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== DRAFT COMPLETE OVERLAY ===== -->
+  <div class="draft-complete-overlay hidden" id="complete-overlay">
+    <h2>Draft Complete</h2>
+    <div style="display:flex;gap:40px;align-items:center;margin-bottom:24px">
+      <div>
+        <div class="result-label blue" style="text-align:center;margin-bottom:8px">BLUE TEAM</div>
+        <div id="result-blue-team" style="display:flex;gap:12px"></div>
+      </div>
+      <div style="font-size:24px;font-weight:800;color:var(--gold)">VS</div>
+      <div>
+        <div class="result-label red" style="text-align:center;margin-bottom:8px">RED TEAM</div>
+        <div id="result-red-team" style="display:flex;gap:12px"></div>
+      </div>
+    </div>
+    
+    <div style="margin-bottom:24px; width:400px; text-align:center">
+      <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px; text-transform:uppercase; letter-spacing:2px">Predicted Comp Score & Win Probability</div>
+      <div class="result-bar" style="width:100%; display:flex; height:32px; background:var(--bg-card); border-radius:4px; overflow:hidden">
+        <div id="win-bar-blue" class="result-fill blue" style="width:50%">50.0%</div>
+        <div id="win-bar-red" class="result-fill red" style="width:50%">50.0%</div>
+      </div>
+    </div>
+
+    <button class="lock-btn" onclick="resetDraft()" style="margin-top:16px">NEW DRAFT</button>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -10,3 +10,5 @@ data/processed/*.csv
 
 .DS_Store
 notebooks/.ipynb_checkpoints/
+*.csv
+*.csv
