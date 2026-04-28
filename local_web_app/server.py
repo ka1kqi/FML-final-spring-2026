@@ -173,11 +173,11 @@ _HC = _load_handcrafted()
 _ROLE_MEMBERSHIP = _compute_role_membership()
 _AVAILABLE_MODELS = _list_available_models()
 _SCORE_FN_CACHE: Dict[str, tuple] = {}
+_RAW_SCORE_FN_CACHE: Dict[str, tuple] = {}
 
 
 def _get_score_fns(model_name: str):
-    """Cache `(score_fn, batch_score_fn)` per model so we don't reload
-    LightGBM / PyTorch on every request."""
+    """Calibrated score-fn pair (used by /api/evaluate for honest absolute prob)."""
     if model_name not in _SCORE_FN_CACHE:
         _SCORE_FN_CACHE[model_name] = P._build_score_fns(
             model_name, _CFG, _VOCAB, _HC
@@ -185,8 +185,67 @@ def _get_score_fns(model_name: str):
     return _SCORE_FN_CACHE[model_name]
 
 
-def _make_recommender(model_name: str) -> P.Recommender:
-    score_fn, batch_fn = _get_score_fns(model_name)
+def _get_raw_score_fns(model_name: str):
+    """Uncalibrated score-fn pair (used by /api/recommend for ranking).
+
+    Isotonic regression fit on a small (~1k row) val set quantises the
+    output to 2-3 unique values, which collapses recommendation
+    rankings. For the recommender we want the model's full continuous
+    output; calibration only matters for the absolute-value display in
+    /api/evaluate.
+    """
+    if model_name in _RAW_SCORE_FN_CACHE:
+        return _RAW_SCORE_FN_CACHE[model_name]
+
+    art = Path(ARTIFACTS_DIR)
+    extra_vocabs = P._load_extra_vocabs(_CFG)
+    if model_name == "baseline":
+        bundle = P.load_pickle(art / "lightgbm_baseline.pkl")
+        feats = json.loads((art / "lightgbm_baseline_features.json").read_text())
+        s = P.make_lgb_score_fn(bundle["model"], bundle["backend"], _VOCAB, _HC,
+                                feats, None, calibrator=None,
+                                extra_vocabs=extra_vocabs, cfg=_CFG)
+        b = P.make_lgb_batch_score_fn(bundle["model"], bundle["backend"], _VOCAB, _HC,
+                                      feats, None, calibrator=None,
+                                      extra_vocabs=extra_vocabs, cfg=_CFG)
+    elif model_name == "hybrid":
+        bundle = P.load_pickle(art / "lightgbm_with_embeddings.pkl")
+        feats = json.loads((art / "lightgbm_with_embeddings_features.json").read_text())
+        emb = np.load(art / "champion_embeddings.npy")
+        s = P.make_lgb_score_fn(bundle["model"], bundle["backend"], _VOCAB, _HC,
+                                feats, emb, calibrator=None,
+                                extra_vocabs=extra_vocabs, cfg=_CFG)
+        b = P.make_lgb_batch_score_fn(bundle["model"], bundle["backend"], _VOCAB, _HC,
+                                      feats, emb, calibrator=None,
+                                      extra_vocabs=extra_vocabs, cfg=_CFG)
+    elif model_name in ("teamcompnet", "wide_deep"):
+        if not P._HAS_TORCH:
+            return _get_score_fns(model_name)
+        device = P.torch_device()
+        if model_name == "teamcompnet":
+            model = P._instantiate_teamcompnet(_CFG, _VOCAB, device)
+            model.load_state_dict(P.torch.load(art / "teamcompnet.pt", map_location=device))
+        else:
+            model = P.WideDeepDraftNet(
+                num_champions=len(_VOCAB),
+                embedding_dim=_CFG.embedding_dim,
+                hidden_dim=_CFG.hidden_dim,
+                dropout=_CFG.dropout,
+                combine=_CFG.wide_deep_combine,
+            ).to(device)
+            model.load_state_dict(P.torch.load(art / "wide_deep.pt", map_location=device))
+        s = P.make_torch_score_fn(model, _VOCAB, device, calibrator=None)
+        b = P.make_torch_batch_score_fn(model, _VOCAB, device, calibrator=None)
+    else:
+        return _get_score_fns(model_name)
+    _RAW_SCORE_FN_CACHE[model_name] = (s, b)
+    return s, b
+
+
+def _make_recommender(model_name: str, use_raw: bool = False) -> P.Recommender:
+    score_fn, batch_fn = (
+        _get_raw_score_fns(model_name) if use_raw else _get_score_fns(model_name)
+    )
     return P.Recommender(
         score_fn=score_fn, batch_score_fn=batch_fn,
         vocab=_VOCAB, handcrafted=_HC,
@@ -281,7 +340,9 @@ def api_recommend():
     if role in state.picks_for(side):
         return jsonify({"error": f"{side} {role} already filled"}), 400
 
-    rec = _make_recommender(model_name)
+    # Use uncalibrated probs for ranking unless caller explicitly opts in.
+    use_calibrated = bool(body.get("calibrated", False))
+    rec = _make_recommender(model_name, use_raw=not use_calibrated)
     if algorithm == "mcts":
         results = rec.mcts(
             state, side, role,
@@ -294,6 +355,19 @@ def api_recommend():
         )
     else:
         results = rec.top_k(state, side, role, k=top_k)
+
+    # The torch batch score-fn returns float32; isotonic calibration converts to
+    # float64 implicitly. When we bypass the calibrator we have to coerce.
+    def _scrub(v):
+        if isinstance(v, (np.floating, np.integer)):
+            return float(v)
+        if isinstance(v, dict):
+            return {k: _scrub(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_scrub(x) for x in v]
+        return v
+
+    results = [_scrub(r) for r in results]
 
     # Optional per-pair breakdown for the recommendation-analysis UI:
     # synergy of (candidate, each ally) + counter of (candidate, each enemy).

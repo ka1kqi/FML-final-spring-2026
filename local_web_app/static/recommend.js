@@ -160,13 +160,34 @@ function renderResults(res, side) {
   const card = document.getElementById('results-card');
   card.classList.remove('hidden');
   const cur = side === 'blue' ? res.current_blue_winprob : (1 - res.current_blue_winprob);
-  document.getElementById('cur-wp').textContent = (cur * 100).toFixed(1) + '%';
+  document.getElementById('cur-wp').textContent = (cur * 100).toFixed(2) + '%';
+
+  // Detect a degenerate case where every recommendation has the same wp:
+  // surface a clear note rather than letting the user think the page is broken.
+  const wps = res.recommendations.map(r => r.win_prob);
+  const range = wps.length ? Math.max(...wps) - Math.min(...wps) : 0;
+  const notice = document.getElementById('flat-notice');
+  if (notice) notice.remove();
+  if (range < 0.0005 && wps.length > 1) {
+    const div = document.createElement('div');
+    div.id = 'flat-notice';
+    div.className = 'flat-notice';
+    div.textContent =
+      'Note: the model returns a near-constant win probability across these candidates ' +
+      `(spread ${(range * 100).toFixed(3)} pp). Use synergy / counter columns and the per-pair ` +
+      'breakdown panel below to pick. This is a known limitation of training on 7.9k matches with ' +
+      'no rank/mastery features — see FINAL_REPORT.md §4.3.';
+    document.getElementById('results-card').insertBefore(div, document.getElementById('rec-grid'));
+  }
 
   const grid = document.getElementById('rec-grid');
   grid.innerHTML = '';
   res.recommendations.forEach((r, i) => {
     const c = state.byName[r.champion] || { img: '' };
-    const wpPct = (r.win_prob * 100).toFixed(1);
+    // Display 2 decimal places of % so 51.32 vs 51.01 is visible.
+    const wpPct = (r.win_prob * 100).toFixed(2);
+    // Zoom the bar to [40%, 60%] so a 0.5 pt difference = 2.5% bar width.
+    const barPct = Math.max(0, Math.min(100, ((r.win_prob - 0.40) / 0.20) * 100));
     const deltaCls = r.delta > 0 ? 'pos' : (r.delta < 0 ? 'neg' : '');
     const synCls = r.synergy > 0 ? 'pos' : (r.synergy < 0 ? 'neg' : '');
     const ctrCls = r.counter > 0 ? 'pos' : (r.counter < 0 ? 'neg' : '');
@@ -180,11 +201,12 @@ function renderResults(res, side) {
           <div class="name">${r.champion}</div>
         </div>
       </div>
-      <div class="wp-bar"><div class="wp-fill" style="width:${Math.min(100, Math.max(0, wpPct))}%"></div></div>
+      <div class="wp-bar"><div class="wp-fill" style="width:${barPct}%"></div></div>
+      <div class="wp-bar-axis">40% &nbsp;&nbsp;&nbsp; <b>50%</b> &nbsp;&nbsp;&nbsp; 60%</div>
       <div class="metrics">
-        <div class="metric"><span class="k">win prob</span><span class="v gold">${wpPct}%</span></div>
-        <div class="metric"><span class="k">Δ</span><span class="v ${deltaCls}">${r.delta >= 0 ? '+' : ''}${r.delta.toFixed(3)}</span></div>
-        <div class="metric"><span class="k">syn / ctr</span><span class="v"><span class="${synCls}">${r.synergy >= 0 ? '+' : ''}${r.synergy.toFixed(2)}</span> / <span class="${ctrCls}">${r.counter >= 0 ? '+' : ''}${r.counter.toFixed(2)}</span></span></div>
+        <div class="metric"><span class="k">model wp</span><span class="v gold">${wpPct}%</span></div>
+        <div class="metric"><span class="k">Δ</span><span class="v ${deltaCls}">${r.delta >= 0 ? '+' : ''}${r.delta.toFixed(4)}</span></div>
+        <div class="metric"><span class="k">syn / ctr</span><span class="v"><span class="${synCls}">${r.synergy >= 0 ? '+' : ''}${r.synergy.toFixed(3)}</span> / <span class="${ctrCls}">${r.counter >= 0 ? '+' : ''}${r.counter.toFixed(3)}</span></span></div>
       </div>
       <div class="notes">${r.notes || ''}</div>`;
     card.addEventListener('click', () => selectRec(i));
