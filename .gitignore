@@ -20,6 +20,10 @@ local_dashboard/*.log
 local_draft_simulator/__pycache__/
 local_draft_simulator/*.log
 
+local_web_app/__pycache__/
+local_web_app/*.log
+local_web_app/.flask_session/
+
 # AutoGluon: source files (autogluon_pipeline.py, README, requirements) are
 # tracked; the Python 3.13 venv (~2 GB), trained predictors, and AutoGluon's
 # internal model directories are not.

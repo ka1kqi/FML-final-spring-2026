@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoL Draft AI · Recommendation Analyzer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/recommend.css">
+</head>
+<body>
+
+  <!-- ============= TOP META BAR ============= -->
+  <div class="meta-bar">
+    <div class="meta-brand">
+      <span class="brand-mark">🎯</span>
+      <span class="brand-text">Recommendation Analyzer</span>
+      <span class="brand-sub">Draft state in · top-k + full breakdown out</span>
+    </div>
+    <div class="meta-stats" id="meta-stats">
+      <div class="stat"><span class="stat-label">test AUC</span><span class="stat-val" id="m-auc">—</span></div>
+      <div class="stat"><span class="stat-label">recall@5</span><span class="stat-val" id="m-recall">—</span></div>
+      <div class="stat"><span class="stat-label">matches</span><span class="stat-val" id="m-matches">—</span></div>
+      <div class="stat"><span class="stat-label">split</span><span class="stat-val" id="m-split">—</span></div>
+    </div>
+    <div class="meta-controls">
+      <a class="reset-btn" href="/" style="text-decoration:none">↩ Simulator</a>
+    </div>
+  </div>
+
+  <div class="rec-page">
+
+    <!-- ============= INPUT FORM ============= -->
+    <section class="input-card">
+      <header class="input-header">
+        <h2>1. Configure draft state</h2>
+        <span class="input-hint">All fields optional. Empty = unfilled slot.</span>
+      </header>
+
+      <div class="team-cols">
+        <div class="team-col blue">
+          <h3>🔵 Blue Team</h3>
+          <div class="role-rows" id="blue-role-rows"></div>
+        </div>
+        <div class="team-col red">
+          <h3>🔴 Red Team</h3>
+          <div class="role-rows" id="red-role-rows"></div>
+        </div>
+      </div>
+
+      <div class="bans-row">
+        <label>Bans <span class="input-hint">(comma-separated names)</span></label>
+        <input id="ban-input" type="text" class="search-input"
+               placeholder="Yone, Aatrox, Pyke, Akali, ...">
+      </div>
+
+      <div class="picker-row">
+        <label>I am picking — side
+          <select id="pick-side">
+            <option value="blue">blue</option>
+            <option value="red">red</option>
+          </select>
+        </label>
+        <label>role
+          <select id="pick-role">
+            <option value="top">top</option>
+            <option value="jungle">jungle</option>
+            <option value="mid">mid</option>
+            <option value="adc">adc</option>
+            <option value="support">support</option>
+          </select>
+        </label>
+        <label>top-K
+          <select id="pick-topk">
+            <option value="3">3</option>
+            <option value="5" selected>5</option>
+            <option value="8">8</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+        <label>model
+          <select id="pick-model"></select>
+        </label>
+        <label>search
+          <select id="pick-algo">
+            <option value="greedy" selected>greedy</option>
+            <option value="beam">beam (depth-2)</option>
+            <option value="mcts">MCTS (64 sims)</option>
+          </select>
+        </label>
+        <button class="run-btn" id="run-btn">Recommend</button>
+      </div>
+    </section>
+
+    <!-- ============= RESULTS ============= -->
+    <section class="results-card hidden" id="results-card">
+      <header class="results-header">
+        <h2>2. Top recommendations</h2>
+        <div class="current-wp">
+          <span class="wp-label">current win prob (your side):</span>
+          <span class="wp-num" id="cur-wp">—</span>
+        </div>
+      </header>
+
+      <div class="rec-grid" id="rec-grid"></div>
+    </section>
+
+    <!-- ============= DETAIL PANEL ============= -->
+    <section class="detail-card hidden" id="detail-card">
+      <header class="detail-header">
+        <div>
+          <h2 id="detail-name">—</h2>
+          <span class="detail-sub" id="detail-sub">—</span>
+        </div>
+        <div class="detail-stats">
+          <div><span class="stat-label">model win prob</span><span class="stat-val" id="d-wp">—</span></div>
+          <div><span class="stat-label">Δ vs current</span><span class="stat-val" id="d-delta">—</span></div>
+          <div><span class="stat-label">avg synergy</span><span class="stat-val" id="d-syn">—</span></div>
+          <div><span class="stat-label">avg counter</span><span class="stat-val" id="d-ctr">—</span></div>
+        </div>
+      </header>
+
+      <div class="detail-grid">
+        <div class="bar-section">
+          <h4>Synergy with each ally</h4>
+          <div id="syn-bars" class="bar-list"><div class="bar-empty">No allies set.</div></div>
+        </div>
+        <div class="bar-section">
+          <h4>Matchup vs each enemy</h4>
+          <div id="ctr-bars" class="bar-list"><div class="bar-empty">No enemies set.</div></div>
+        </div>
+      </div>
+
+      <div class="detail-notes">
+        <span class="stat-label">Model commentary:</span>
+        <span id="d-notes">—</span>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="/static/recommend.js"></script>
+</body>
+</html>

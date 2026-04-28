@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoL Draft AI · Set Transformer</title>
+  <meta name="description" content="Time-split-validated, calibrated draft win predictor with MCTS lookahead.">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- ============= TOP META BAR (calibrated metrics, model selector) ============= -->
+  <div class="meta-bar">
+    <div class="meta-brand">
+      <span class="brand-mark">🛡️</span>
+      <span class="brand-text">LoL Draft AI</span>
+      <span class="brand-sub">Set Transformer · Time-split · Calibrated</span>
+    </div>
+    <div class="meta-stats" id="meta-stats">
+      <div class="stat"><span class="stat-label">test AUC</span><span class="stat-val" id="m-auc">—</span></div>
+      <div class="stat"><span class="stat-label">recall@5</span><span class="stat-val" id="m-recall">—</span></div>
+      <div class="stat"><span class="stat-label">matches</span><span class="stat-val" id="m-matches">—</span></div>
+      <div class="stat"><span class="stat-label">split</span><span class="stat-val" id="m-split">—</span></div>
+    </div>
+    <div class="meta-controls">
+      <a class="reset-btn" href="/recommend" style="text-decoration:none">→ Recommendation Analyzer</a>
+      <label>model
+        <select id="sel-model"></select>
+      </label>
+      <label>search
+        <select id="sel-algo">
+          <option value="greedy">greedy</option>
+          <option value="beam">beam</option>
+          <option value="mcts">MCTS</option>
+        </select>
+      </label>
+      <button class="reset-btn" onclick="resetDraft()">Reset Draft</button>
+    </div>
+  </div>
+
+  <div class="draft-container">
+
+    <!-- ============= BAN PHASE BAR ============= -->
+    <div class="ban-phase">
+      <div class="ban-team-label blue">BLUE BANS</div>
+      <div class="ban-team" id="blue-bans"></div>
+      <div class="ban-separator"></div>
+      <div class="ban-team" id="red-bans"></div>
+      <div class="ban-team-label red">RED BANS</div>
+    </div>
+
+    <!-- ============= MAIN AREA ============= -->
+    <div class="main-area">
+
+      <!-- Blue picks -->
+      <div class="team-panel blue">
+        <div class="team-header">
+          <span class="team-title">Blue Team</span>
+          <span class="team-wp" id="blue-wp">50.0%</span>
+        </div>
+        <div id="blue-picks"></div>
+      </div>
+
+      <!-- Center: phase indicator + grid + controls -->
+      <div class="center-panel">
+        <div class="center-top">
+          <div class="phase-indicator" id="phase-indicator">BAN PHASE</div>
+          <div class="phase-text" id="phase-text">Loading…</div>
+        </div>
+        <div class="search-bar">
+          <input
+            type="text" class="search-input" id="search-input"
+            placeholder="Search champions…" oninput="setSearch(this.value)"
+          >
+          <div class="role-filters">
+            <button class="role-btn active" data-role="all" onclick="setRoleFilter('all')" title="All">★</button>
+            <button class="role-btn" data-role="top"     onclick="setRoleFilter('top')"     title="Top">T</button>
+            <button class="role-btn" data-role="jungle"  onclick="setRoleFilter('jungle')"  title="Jungle">J</button>
+            <button class="role-btn" data-role="mid"     onclick="setRoleFilter('mid')"     title="Mid">M</button>
+            <button class="role-btn" data-role="adc"     onclick="setRoleFilter('adc')"     title="ADC">A</button>
+            <button class="role-btn" data-role="support" onclick="setRoleFilter('support')" title="Support">S</button>
+          </div>
+        </div>
+        <div class="champion-grid-container">
+          <div class="champion-grid" id="champion-grid"></div>
+        </div>
+      </div>
+
+      <!-- Red picks -->
+      <div class="team-panel red">
+        <div class="team-header">
+          <span class="team-title">Red Team</span>
+          <span class="team-wp" id="red-wp">50.0%</span>
+        </div>
+        <div id="red-picks"></div>
+      </div>
+
+    </div>
+
+    <!-- ============= BOTTOM BAR ============= -->
+    <div class="bottom-bar">
+      <div class="recommendations-panel">
+        <div class="rec-label">
+          <span>AI PICKS</span>
+          <span class="rec-algo" id="rec-algo-tag">greedy</span>
+        </div>
+        <div class="rec-list" id="rec-list">
+          <div class="rec-empty">Recommendations appear during pick phase.</div>
+        </div>
+      </div>
+      <div class="action-area">
+        <button class="lock-btn ban-mode" id="lock-btn" disabled>LOCK</button>
+        <button class="reset-btn" id="skip-ban-btn" onclick="skipBan()">Skip Ban</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============= COMPLETED-DRAFT OVERLAY ============= -->
+  <div class="draft-complete-overlay hidden" id="complete-overlay">
+    <h2>Draft Complete</h2>
+    <div class="result-comp">
+      <div>
+        <div class="result-label blue">BLUE TEAM</div>
+        <div id="result-blue-team" class="result-row"></div>
+      </div>
+      <div class="vs-mark">VS</div>
+      <div>
+        <div class="result-label red">RED TEAM</div>
+        <div id="result-red-team" class="result-row"></div>
+      </div>
+    </div>
+    <div class="result-prob-section">
+      <div class="result-prob-title">Calibrated win probability (Set Transformer · time-split test AUC 0.517)</div>
+      <div class="result-bar">
+        <div id="win-bar-blue" class="result-fill blue" style="width:50%">50.0%</div>
+        <div id="win-bar-red"  class="result-fill red"  style="width:50%">50.0%</div>
+      </div>
+    </div>
+    <button class="lock-btn" onclick="resetDraft()">NEW DRAFT</button>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
