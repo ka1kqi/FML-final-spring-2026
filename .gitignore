@@ -10,3 +10,41 @@ data/processed/*.csv
 
 .DS_Store
 notebooks/.ipynb_checkpoints/
+
+# ---- Local tools: track source code, ignore caches / venv / model dumps ----
+local_dashboard/__pycache__/
+local_dashboard/.streamlit/
+local_dashboard/.cache/
+local_dashboard/*.log
+
+local_draft_simulator/__pycache__/
+local_draft_simulator/*.log
+
+# AutoGluon: source files (autogluon_pipeline.py, README, requirements) are
+# tracked; the Python 3.13 venv (~2 GB), trained predictors, and AutoGluon's
+# internal model directories are not.
+local_autogluon/.venv/
+local_autogluon/predictor/
+local_autogluon/predictor_*/
+local_autogluon/AutogluonModels/
+local_autogluon/__pycache__/
+local_autogluon/*.log
+
+.local_dashboard_cache/
+.streamlit/secrets.toml
+
+# ---- Training artifacts / runs / model weights / logs ----
+artifacts/
+runs/
+training_logs/
+tensorboard_logs/
+wandb/
+mlruns/
+*.pt
+*.pth
+*.joblib
+*.npy
+*.npz
+*.parquet
+*.feather
+*.log

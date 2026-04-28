@@ -1,0 +1,27 @@
+{
+  "artifacts_dir": "artifacts",
+  "default_refresh_seconds": 5,
+  "umap_enabled": true,
+  "tabs": [
+    "Overview",
+    "Live Training",
+    "Model Comparison",
+    "Calibration",
+    "Confusion / Threshold",
+    "Feature Importance",
+    "Champion Embeddings",
+    "Recommendation Playground",
+    "Beam Search Visualizer",
+    "Leakage & Schema",
+    "Artifacts Browser"
+  ],
+  "playground_defaults": {
+    "side": "blue",
+    "role": "top",
+    "top_k": 5,
+    "model": "hybrid",
+    "beam_width": 5,
+    "beam_depth": 2
+  },
+  "notes": "This file is a reference - the dashboard does not currently read it. It documents the runtime knobs the dashboard exposes so users know what they can tweak."
+}
