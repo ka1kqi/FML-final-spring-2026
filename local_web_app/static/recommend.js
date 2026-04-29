@@ -249,17 +249,22 @@ async function refreshWinProb() {
               || (state.available.includes('wide_deep') ? 'wide_deep' : state.available[0]);
   if (!model) return;
   try {
-    const res = await fetch('/api/evaluate', {
+    const httpRes = await fetch('/api/evaluate', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ ...buildPayload(), model }),
-    }).then(r => r.json());
+    });
+    if (!httpRes.ok || !(httpRes.headers.get('content-type') || '').includes('application/json')) {
+      console.warn('refreshWinProb: non-JSON response', httpRes.status, await httpRes.text());
+      return;
+    }
+    const res = await httpRes.json();
     const blue = res.blue_win_prob;
     if (blue != null) {
       document.getElementById('blue-wp').textContent = (blue * 100).toFixed(2) + '%';
       document.getElementById('red-wp').textContent  = ((1 - blue) * 100).toFixed(2) + '%';
     }
-  } catch (_) { /* ignore */ }
+  } catch (e) { console.warn('refreshWinProb failed', e); }
 }
 
 async function runRecommend() {
@@ -287,13 +292,24 @@ async function runRecommend() {
 
   let res;
   try {
-    res = await fetch('/api/recommend', {
+    const httpRes = await fetch('/api/recommend', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(body),
-    }).then(r => r.json());
+    });
+    const ct = httpRes.headers.get('content-type') || '';
+    if (!httpRes.ok || !ct.includes('application/json')) {
+      // Server returned HTML (Flask error page) or non-2xx. Surface the
+      // real text so the user/dev can diagnose instead of the cryptic
+      // "Unexpected token '<'" SyntaxError from .json().
+      const txt = await httpRes.text();
+      const snippet = txt.length > 800 ? txt.slice(0, 800) + ' …' : txt;
+      throw new Error(`HTTP ${httpRes.status} ${httpRes.statusText}; body: ${snippet}`);
+    }
+    res = await httpRes.json();
   } catch (e) {
-    alert('Request failed: ' + e);
+    alert('Request failed: ' + e.message);
+    console.error('recommend failed', e);
     btn.disabled = false;
     btn.textContent = '🎯 Recommend';
     return;

@@ -278,27 +278,32 @@ async function refresh() {
     return;
   }
   document.getElementById('complete-overlay').classList.add('hidden');
+  // Helper that swallows HTML error pages instead of crashing on r.json().
+  async function _safeJson(url, body) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const ct = r.headers.get('content-type') || '';
+      if (!r.ok || !ct.includes('application/json')) {
+        console.warn(url + ' returned ' + r.status, await r.text());
+        return {};
+      }
+      return await r.json();
+    } catch (e) { console.warn(url + ' failed', e); return {}; }
+  }
   let payload;
   if (action.type === 'pick') {
     const role = (action.side === 'blue' ? state.blueRoleForSlot : state.redRoleForSlot)[action.slot];
-    const body = {
+    payload = await _safeJson('/api/recommend', {
       ...buildPayload(),
       side: action.side, role,
-      top_k: 5,
-      algorithm: state.algorithm,
-      beam_width: 5, beam_depth: 2,
-      mcts_simulations: 64,
-    };
-    payload = await fetch('/api/recommend', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(r => r.json()).catch(_ => ({}));
+      top_k: 5, algorithm: state.algorithm,
+      beam_width: 5, beam_depth: 2, mcts_simulations: 64,
+    });
   } else {
-    // Ban phase: just evaluate current win prob, hide AI picks.
-    payload = await fetch('/api/evaluate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildPayload()),
-    }).then(r => r.json()).catch(_ => ({}));
+    payload = await _safeJson('/api/evaluate', buildPayload());
     payload.current_blue_winprob = payload?.blue_win_prob;
   }
   renderPhase(payload);
