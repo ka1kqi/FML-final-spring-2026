@@ -29,7 +29,9 @@ caches / venvs inside it are ignored - same pattern as our other tools.
 from __future__ import annotations
 
 import json
+import logging
 import sys
+import traceback
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -160,6 +162,69 @@ def _summary_metrics() -> Dict[str, object]:
 
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+log = logging.getLogger("draft_web_app")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+
+
+# ---------------------------------------------------------------------------
+# Global error handler: NEVER let Flask render an HTML 500 page. The frontend
+# parses every response as JSON, so an HTML body causes a cryptic
+# "Unexpected token <" SyntaxError and hides the real error. By converting
+# every uncaught exception (and HTTPException) into a JSON envelope with the
+# traceback, the user / browser console always sees the actual problem.
+# ---------------------------------------------------------------------------
+from werkzeug.exceptions import HTTPException  # noqa: E402
+
+
+@app.errorhandler(HTTPException)
+def _handle_http_exception(e: HTTPException):
+    log.warning("HTTP %s on %s: %s", e.code, request.path if request else "?", e.description)
+    return jsonify({
+        "error": e.description or e.name,
+        "type": "HTTPException",
+        "status": e.code,
+    }), e.code or 500
+
+
+@app.errorhandler(Exception)
+def _handle_any_exception(e: Exception):
+    tb = traceback.format_exc()
+    log.error("Unhandled %s on %s\n%s", e.__class__.__name__,
+              request.path if request else "?", tb)
+    return jsonify({
+        "error": str(e) or e.__class__.__name__,
+        "type": e.__class__.__name__,
+        "status": 500,
+        "traceback": tb.splitlines(),
+    }), 500
+
+
+def _safe_endpoint(fn):
+    """Decorator: any exception raised inside a route handler is caught and
+    returned as a structured JSON 500. (The global @app.errorhandler above
+    catches uncaught errors too, but explicit wrapping gives tighter control
+    over per-endpoint metadata.)
+    """
+    from functools import wraps
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except HTTPException:
+            raise  # let _handle_http_exception render it
+        except Exception as exc:
+            tb = traceback.format_exc()
+            log.error("[%s] crashed: %s\n%s", fn.__name__, exc, tb)
+            return jsonify({
+                "error": str(exc) or exc.__class__.__name__,
+                "type": exc.__class__.__name__,
+                "endpoint": fn.__name__,
+                "status": 500,
+                "traceback": tb.splitlines(),
+            }), 500
+    return _wrapped
+
 
 if not (ARTIFACTS_DIR / "champion_to_idx.json").exists():
     raise SystemExit(
@@ -282,17 +347,20 @@ def _draft_state_from_payload(body: dict) -> P.DraftState:
 
 
 @app.route("/")
+@_safe_endpoint
 def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
 @app.route("/recommend")
+@_safe_endpoint
 def recommend_page():
     """Recommendation-analysis page (form + detailed breakdown)."""
     return send_from_directory(app.static_folder, "recommend.html")
 
 
 @app.route("/api/meta")
+@_safe_endpoint
 def api_meta():
     """Surfaced once at page-load so the UI can show real metric provenance
     (test AUC / recall@k / dataset size / split type) instead of
@@ -307,6 +375,7 @@ def api_meta():
 
 
 @app.route("/api/champions")
+@_safe_endpoint
 def api_champions():
     """List of champions for the grid + their playable roles."""
     out = []
@@ -322,9 +391,10 @@ def api_champions():
 
 
 @app.route("/api/recommend", methods=["POST"])
+@_safe_endpoint
 def api_recommend():
     """Return top-K legal champion recommendations with calibrated win prob."""
-    body = request.get_json(force=True)
+    body = request.get_json(force=True, silent=True) or {}
     side = body.get("side", "blue")
     role = body.get("role", "top")
     top_k = int(body.get("top_k", 5))
@@ -398,9 +468,10 @@ def api_recommend():
 
 
 @app.route("/api/evaluate", methods=["POST"])
+@_safe_endpoint
 def api_evaluate():
     """Predict blue-side win probability for the full draft (calibrated)."""
-    body = request.get_json(force=True)
+    body = request.get_json(force=True, silent=True) or {}
     model_name = body.get("model", _AVAILABLE_MODELS[0])
     if model_name not in _AVAILABLE_MODELS:
         return jsonify({"error": f"unknown model {model_name!r}"}), 400
