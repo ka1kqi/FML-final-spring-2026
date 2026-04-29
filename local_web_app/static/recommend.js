@@ -66,6 +66,22 @@ function hydrateMetaBar(meta) {
   document.getElementById('m-recall').textContent  = rec['recall@5'] != null ? (rec['recall@5'] * 100).toFixed(1) + '%' : '—';
   document.getElementById('m-matches').textContent = schema.matches != null ? schema.matches.toLocaleString() : '—';
   document.getElementById('m-split').textContent   = schema.split?.method ? schema.split.method.replace('_', '-') : '—';
+
+  // If any models were skipped at server startup (e.g. PyTorch missing for
+  // wide_deep), surface why so the user can fix their env instead of seeing
+  // a confusing default model.
+  const skipped = meta.skipped_models || {};
+  const names = Object.keys(skipped);
+  const old = document.getElementById('skip-banner');
+  if (old) old.remove();
+  if (names.length) {
+    const div = document.createElement('div');
+    div.id = 'skip-banner';
+    div.className = 'flat-notice';
+    div.innerHTML = '<b>Some models are not loaded on this server:</b><br>' +
+      names.map(n => `<code>${n}</code> — ${skipped[n]}`).join('<br>');
+    document.querySelector('.rec-page').prepend(div);
+  }
 }
 
 function hydrateModelSelector() {

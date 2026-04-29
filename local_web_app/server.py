@@ -79,9 +79,17 @@ def _load_handcrafted():
     return P.load_pickle(ARTIFACTS_DIR / "handcrafted_stats.pkl")
 
 
+_MODEL_SKIP_REASONS: Dict[str, str] = {}
+
+
 def _list_available_models() -> List[str]:
-    """Whichever model artefacts actually exist on disk."""
+    """Models whose artefact exists AND whose score-fn factory can actually
+    instantiate (avoids dropping a 500 later if e.g. torch is missing in
+    the env that runs the web server while the .pt file is on disk)."""
     out: List[str] = []
+    _MODEL_SKIP_REASONS.clear()
+    v = _load_vocab()
+    h = _load_handcrafted()
     for name, fn in (
         ("wide_deep", "wide_deep.pt"),
         ("hybrid", "lightgbm_with_embeddings.pkl"),
@@ -89,8 +97,26 @@ def _list_available_models() -> List[str]:
         ("teamcompnet", "teamcompnet.pt"),
         ("stacker", "stacker.pkl"),
     ):
-        if (ARTIFACTS_DIR / fn).exists():
+        if not (ARTIFACTS_DIR / fn).exists():
+            _MODEL_SKIP_REASONS[name] = f"artefact missing: {fn}"
+            continue
+        try:
+            P._build_score_fns(name, _CFG, v, h)
             out.append(name)
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            _MODEL_SKIP_REASONS[name] = reason
+            log.warning(
+                "Skipping model %r: %s. To enable it install the missing "
+                "runtime (torch for wide_deep / teamcompnet, lightgbm for "
+                "the LGB models) and restart.",
+                name, reason,
+            )
+    if not out:
+        log.error(
+            "No models could be loaded. Train at least one stage with: "
+            "python lol_draft_pipeline.py train --fast-dev-run"
+        )
     return out
 
 
@@ -368,6 +394,7 @@ def api_meta():
     summary = _summary_metrics()
     return jsonify({
         "available_models": _AVAILABLE_MODELS,
+        "skipped_models": _MODEL_SKIP_REASONS,
         "champion_count": len(_VOCAB) - 1,
         "summary": summary,
         "ddragon_version": DDRAGON_VERSION,
