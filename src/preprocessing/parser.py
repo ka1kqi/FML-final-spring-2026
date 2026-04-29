@@ -99,9 +99,26 @@ def parse_pro_match(game_df: pd.DataFrame) -> dict:
     return row
 
 
+def _get_champion_name_to_id() -> dict[str, int]:
+    """Fetch champion name -> integer ID mapping from Riot Data Dragon."""
+    import requests
+    resp = requests.get(
+        "https://ddragon.leagueoflegends.com/cdn/14.8.1/data/en_US/champion.json"
+    )
+    data = resp.json()
+    return {v["name"]: int(v["key"]) for v in data["data"].values()}
+
+
 def parse_pro_csv(csv_path: str) -> pd.DataFrame:
     """Load Oracle's Elixir CSV and return one row per match."""
+    name_to_id = _get_champion_name_to_id()
     df = pd.read_csv(csv_path)
+
+    # Normalize champion name to ID
+    df["champion"] = df["champion"].map(name_to_id)
+    for i in range(1, 6):
+        df[f"ban{i}"] = df[f"ban{i}"].map(name_to_id)
+
     rows = []
     for gameid, group in df.groupby("gameid"):
         try:
