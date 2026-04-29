@@ -1,0 +1,2 @@
+# Web app extras (pipeline + dashboard deps from requirements.txt are already needed).
+flask>=2.3

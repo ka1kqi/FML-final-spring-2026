@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoL Draft AI · Recommendation Analyzer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/recommend.css">
+</head>
+<body>
+
+  <!-- ============= TOP META BAR ============= -->
+  <div class="meta-bar">
+    <div class="meta-brand">
+      <span class="brand-mark">🎯</span>
+      <span class="brand-text">Recommendation Analyzer</span>
+      <span class="brand-sub">click slots · click champions · get analyzed top-k</span>
+    </div>
+    <div class="meta-stats" id="meta-stats">
+      <div class="stat"><span class="stat-label">test AUC</span><span class="stat-val" id="m-auc">—</span></div>
+      <div class="stat"><span class="stat-label">recall@5</span><span class="stat-val" id="m-recall">—</span></div>
+      <div class="stat"><span class="stat-label">matches</span><span class="stat-val" id="m-matches">—</span></div>
+      <div class="stat"><span class="stat-label">split</span><span class="stat-val" id="m-split">—</span></div>
+    </div>
+    <div class="meta-controls">
+      <a class="reset-btn" href="/" style="text-decoration:none">↩ Simulator</a>
+    </div>
+  </div>
+
+  <div class="rec-page">
+
+    <!-- ============= 1. CONFIGURE STATE (visual) ============= -->
+    <section class="config-section">
+      <header class="section-header">
+        <h2>1. Build your draft state</h2>
+        <span class="hint">Click an empty role slot to pick where you want recommendations. Click a champion below to fill the slot. Click a filled slot to clear it.</span>
+      </header>
+
+      <div class="config-teams">
+        <!-- Blue team -->
+        <div class="team-mini blue">
+          <div class="team-mini-header">
+            <span class="team-mini-title">🔵 Blue Team</span>
+            <span class="team-mini-wp" id="blue-wp">—</span>
+          </div>
+          <div class="team-mini-slots" id="blue-rec-slots"></div>
+        </div>
+        <!-- Red team -->
+        <div class="team-mini red">
+          <div class="team-mini-header">
+            <span class="team-mini-title">🔴 Red Team</span>
+            <span class="team-mini-wp" id="red-wp">—</span>
+          </div>
+          <div class="team-mini-slots" id="red-rec-slots"></div>
+        </div>
+      </div>
+
+      <!-- Bans + add ban button -->
+      <div class="bans-row-rec">
+        <span class="bans-label">Bans</span>
+        <div class="bans-chip-list" id="rec-bans-list">
+          <button class="ban-add-btn" id="ban-add-btn">+ click here, then click champion to ban</button>
+        </div>
+      </div>
+
+      <!-- Run controls -->
+      <div class="run-row">
+        <div class="active-info" id="active-info">Click any empty role above to select your recommendation target.</div>
+        <div class="run-controls">
+          <label>top-K
+            <select id="pick-topk">
+              <option value="3">3</option>
+              <option value="5" selected>5</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+            </select>
+          </label>
+          <label>model
+            <select id="pick-model"></select>
+          </label>
+          <label>search
+            <select id="pick-algo">
+              <option value="greedy" selected>greedy</option>
+              <option value="beam">beam</option>
+              <option value="mcts">MCTS</option>
+            </select>
+          </label>
+          <button class="run-btn" id="run-btn" disabled>🎯 Recommend</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============= 2. CHAMPION GRID ============= -->
+    <section class="grid-section">
+      <header class="section-header">
+        <h2>2. Pick champions</h2>
+        <span class="hint" id="grid-hint">No active slot — click a slot above to start.</span>
+      </header>
+      <div class="grid-controls">
+        <input
+          type="text" class="search-input" id="search-input"
+          placeholder="Search champions…" oninput="onSearchInput(this.value)"
+        >
+        <div class="role-filters">
+          <button class="role-btn active" data-role="all"     onclick="setRoleFilter('all')"     title="All">★</button>
+          <button class="role-btn" data-role="top"     onclick="setRoleFilter('top')"     title="Top">T</button>
+          <button class="role-btn" data-role="jungle"  onclick="setRoleFilter('jungle')"  title="Jungle">J</button>
+          <button class="role-btn" data-role="mid"     onclick="setRoleFilter('mid')"     title="Mid">M</button>
+          <button class="role-btn" data-role="adc"     onclick="setRoleFilter('adc')"     title="ADC">A</button>
+          <button class="role-btn" data-role="support" onclick="setRoleFilter('support')" title="Support">S</button>
+        </div>
+      </div>
+      <div class="grid-scroll">
+        <div class="champion-grid" id="champion-grid"></div>
+      </div>
+    </section>
+
+    <!-- ============= 3. RESULTS ============= -->
+    <section class="results-card hidden" id="results-card">
+      <header class="results-header">
+        <h2>3. Top recommendations</h2>
+        <div class="current-wp">
+          <span class="wp-label">your current win prob:</span>
+          <span class="wp-num" id="cur-wp">—</span>
+        </div>
+      </header>
+      <div class="rec-grid" id="rec-grid"></div>
+    </section>
+
+    <!-- ============= 4. DETAIL ============= -->
+    <section class="detail-card hidden" id="detail-card">
+      <header class="detail-header">
+        <div>
+          <h2 id="detail-name">—</h2>
+          <span class="detail-sub" id="detail-sub">—</span>
+        </div>
+        <div class="detail-stats">
+          <div><span class="stat-label">model wp</span><span class="stat-val" id="d-wp">—</span></div>
+          <div><span class="stat-label">Δ</span><span class="stat-val" id="d-delta">—</span></div>
+          <div><span class="stat-label">avg synergy</span><span class="stat-val" id="d-syn">—</span></div>
+          <div><span class="stat-label">avg counter</span><span class="stat-val" id="d-ctr">—</span></div>
+        </div>
+      </header>
+
+      <div class="detail-grid">
+        <div class="bar-section">
+          <h4>Synergy with each ally</h4>
+          <div id="syn-bars" class="bar-list"><div class="bar-empty">No allies set.</div></div>
+        </div>
+        <div class="bar-section">
+          <h4>Matchup vs each enemy</h4>
+          <div id="ctr-bars" class="bar-list"><div class="bar-empty">No enemies set.</div></div>
+        </div>
+      </div>
+
+      <div class="detail-notes">
+        <span class="stat-label">Model commentary:</span>
+        <span id="d-notes">—</span>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="/static/recommend.js"></script>
+</body>
+</html>

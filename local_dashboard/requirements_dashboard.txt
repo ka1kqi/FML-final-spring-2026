@@ -1,0 +1,7 @@
+# Dashboard-only dependencies. The main pipeline already pulls in
+# pandas / numpy / scikit-learn / lightgbm / torch via requirements.txt.
+streamlit>=1.32
+plotly>=5.20
+# Optional: enables UMAP projection in the embedding explorer. Skipped silently
+# when not installed (PCA fallback always works).
+umap-learn>=0.5

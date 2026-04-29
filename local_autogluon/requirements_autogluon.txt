@@ -1,0 +1,2 @@
+# AutoGluon Tabular - heavy install (~1-2 GB on first run, includes torch/lightgbm/xgboost/catboost).
+autogluon.tabular[lightgbm,xgboost,catboost]>=1.1
