@@ -3,7 +3,7 @@ Flask backend for the polished web draft simulator.
 
 Loads the hand-rolled `lol_draft_pipeline` artifacts (Set Transformer
 wide_deep + LightGBM hybrid + champion vocabulary + handcrafted stats +
-isotonic calibrators) once at startup, then serves four endpoints to the
+isotonic calibrators) once at startup, then serves JSON endpoints to the
 Vanilla-JS frontend.
 
 Endpoints
@@ -12,6 +12,9 @@ GET  /                  - index.html
 GET  /api/meta          - dataset/run metadata (test AUC, recall@k, vocab size)
 GET  /api/champions     - champion list with (best-guess) DDragon images
                           and role membership counts
+GET  /api/similar       - top-K cosine-similar champions (TeamCompNet
+                          embedding space), when ``champion_embeddings.npy``
+                          is present
 POST /api/recommend     - top-K legal recommendations for the current
                           draft slot.  Honours model + algorithm selection
                           (greedy / beam / MCTS).
@@ -32,7 +35,7 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -71,6 +74,16 @@ _CFG = P.PipelineConfig(artifacts_dir=str(ARTIFACTS_DIR))
 
 def _load_vocab() -> Dict[str, int]:
     return json.loads((ARTIFACTS_DIR / "champion_to_idx.json").read_text())
+
+
+def _invert_vocab(vocab: Dict[str, int]) -> Dict[int, str]:
+    """idx -> champion name; skips padding / UNK row."""
+    out: Dict[int, str] = {}
+    for name, idx in vocab.items():
+        if name == P.UNKNOWN_TOKEN or idx == P.UNKNOWN_INDEX:
+            continue
+        out[idx] = name
+    return out
 
 
 def _load_handcrafted():
@@ -172,8 +185,64 @@ _VOCAB = _load_vocab()
 _HC = _load_handcrafted()
 _ROLE_MEMBERSHIP = _compute_role_membership()
 _AVAILABLE_MODELS = _list_available_models()
+_IDX_TO_NAME = _invert_vocab(_VOCAB)
+_EMB_NORM: Optional[np.ndarray] = None
+_SIM_AVAILABLE = False
+
+try:
+    _emb_path = ARTIFACTS_DIR / "champion_embeddings.npy"
+    _emb_loaded = np.load(_emb_path)
+    _n_vocab = len(_VOCAB)
+    if _emb_loaded.ndim == 2 and _emb_loaded.shape[0] == _n_vocab:
+        _emat = np.asarray(_emb_loaded, dtype=np.float64)
+        _nrms = np.linalg.norm(_emat, axis=1, keepdims=True)
+        _nrms = np.where(_nrms < 1e-12, 1.0, _nrms)
+        _EMB_NORM = _emat / _nrms
+        _SIM_AVAILABLE = True
+    else:
+        app.logger.warning(
+            "champion_embeddings.npy unusable for similarity (shape=%s; "
+            "expected first dim=%d); /api/similar disabled",
+            getattr(_emb_loaded, "shape", None),
+            _n_vocab,
+        )
+except Exception as exc:
+    app.logger.warning("Similar-champion embeddings not loaded: %s", exc)
+
 _SCORE_FN_CACHE: Dict[str, tuple] = {}
 _RAW_SCORE_FN_CACHE: Dict[str, tuple] = {}
+
+
+def _neighbor_json_for_embedding_index(embed_idx: int, similarity: float) -> Optional[Dict[str, object]]:
+    name = _IDX_TO_NAME.get(embed_idx)
+    if not name:
+        return None
+    ddragon_key = DDRAGON_KEY_MAP.get(name, name)
+    return {
+        "name": name,
+        "similarity": float(np.clip(similarity, -1.0, 1.0)),
+        "img": (
+            f"https://ddragon.leagueoflegends.com/cdn/"
+            f"{DDRAGON_VERSION}/img/champion/{ddragon_key}.png"
+        ),
+        "roles": _ROLE_MEMBERSHIP.get(name, []),
+        "historical_winrate": float(_HC.winrate(name)),
+    }
+
+
+def _cosine_neighbor_indices(idx: int, k: int) -> List[Tuple[int, float]]:
+    """Top-k cosine neighbors by row embedding; skips UNK row and anchor."""
+    if not _SIM_AVAILABLE or _EMB_NORM is None:
+        return []
+    scores = (_EMB_NORM[idx] @ _EMB_NORM.T).copy()
+    scores[idx] = -np.inf
+    scores[P.UNKNOWN_INDEX] = -np.inf
+    kk = int(min(k, max(0, int(np.sum(np.isfinite(scores))) - 1)))
+    if kk <= 0:
+        return []
+    part = np.argpartition(-scores, kk - 1)[:kk]
+    order = part[np.argsort(-scores[part])]
+    return [(int(j), float(scores[j])) for j in order]
 
 
 def _get_score_fns(model_name: str):
@@ -301,6 +370,7 @@ def api_meta():
     return jsonify({
         "available_models": _AVAILABLE_MODELS,
         "champion_count": len(_VOCAB) - 1,
+        "similar_embeddings_available": _SIM_AVAILABLE,
         "summary": summary,
         "ddragon_version": DDRAGON_VERSION,
     })
@@ -319,6 +389,39 @@ def api_champions():
             "roles": _ROLE_MEMBERSHIP.get(name, []),
         })
     return jsonify(out)
+
+
+@app.route("/api/similar")
+def api_similar():
+    """Top-K champions by cosine similarity in embedding space (learned NN)."""
+    if not _SIM_AVAILABLE or _EMB_NORM is None:
+        return jsonify({"available": False})
+
+    champion = (request.args.get("champion") or "").strip()
+    if not champion:
+        return jsonify({"error": "missing champion"}), 400
+
+    idx = _VOCAB.get(champion)
+    if idx is None:
+        return jsonify({"error": f"unknown champion {champion!r}"}), 400
+    if champion == P.UNKNOWN_TOKEN or idx == P.UNKNOWN_INDEX:
+        return jsonify({"error": "invalid anchor champion"}), 400
+
+    k_req = request.args.get("k", type=int)
+    k = int(k_req) if k_req is not None else 8
+    k = max(1, min(k, 16))
+
+    neighbors: List[Dict[str, object]] = []
+    for j, sim in _cosine_neighbor_indices(idx, k):
+        blob = _neighbor_json_for_embedding_index(j, sim)
+        if blob is not None:
+            neighbors.append(blob)
+
+    return jsonify({
+        "available": True,
+        "anchor": champion,
+        "neighbors": neighbors,
+    })
 
 
 @app.route("/api/recommend", methods=["POST"])
@@ -425,6 +528,7 @@ if __name__ == "__main__":
     print(f"Champions loaded:   {len(_VOCAB)-1}")
     print(f"Available models:   {_AVAILABLE_MODELS}")
     print(f"Role membership:    {len(_ROLE_MEMBERSHIP)} champions classified")
+    print(f"Similar embeddings: {_SIM_AVAILABLE}")
     summary = _summary_metrics()
     if summary:
         best = (summary.get("models") or {})

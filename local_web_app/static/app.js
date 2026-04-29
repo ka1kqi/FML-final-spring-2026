@@ -4,6 +4,7 @@
    Talks to the Flask backend on the same origin:
      GET  /api/meta
      GET  /api/champions
+     GET  /api/similar
      POST /api/recommend
      POST /api/evaluate
 
@@ -50,7 +51,12 @@ const state = {
   available: [],            // model names from /api/meta
   model: null,
   algorithm: 'greedy',
+  similarAvailable: false,
+  similarCache: new Map(),
 };
+
+/** Drops late /api/similar responses when selection changes faster than the network. */
+let similarStripFetchNonce = 0;
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -64,6 +70,7 @@ async function boot() {
   state.championsByName = Object.fromEntries(champs.map(c => [c.name, c]));
   state.available = meta.available_models || [];
   state.model = state.available.includes('wide_deep') ? 'wide_deep' : state.available[0];
+  state.similarAvailable = !!meta.similar_embeddings_available;
 
   hydrateMetaBar(meta);
   hydrateModelSelector();
@@ -158,6 +165,24 @@ function renderPicks() {
   }
 }
 
+/** Toggle gold selection outline without rebuilding the champion grid DOM. */
+function updateSelectionHighlight() {
+  const grid = document.getElementById('champion-grid');
+  if (!grid) return;
+  for (const el of grid.querySelectorAll('.champ-cell.selected')) {
+    el.classList.remove('selected');
+  }
+  if (!state.selected) return;
+  for (const el of grid.querySelectorAll('.champ-cell')) {
+    if (el.getAttribute('data-champion') === state.selected) {
+      el.classList.add('selected');
+      return;
+    }
+  }
+  // Selected champion not in the current filtered view — full redraw.
+  renderGrid();
+}
+
 function renderGrid() {
   const grid = document.getElementById('champion-grid');
   const usedSet = currentUsedChampions();
@@ -171,6 +196,7 @@ function renderGrid() {
     }
     const cell = document.createElement('div');
     cell.className = 'champ-cell';
+    cell.setAttribute('data-champion', c.name);
     if (state.selected === c.name) cell.classList.add('selected');
     if (usedSet.has(c.name)) cell.classList.add('disabled');
     cell.innerHTML = `<img src="${c.img}" alt="${c.name}"
@@ -180,8 +206,9 @@ function renderGrid() {
     cell.addEventListener('click', () => {
       if (usedSet.has(c.name)) return;
       state.selected = (state.selected === c.name) ? null : c.name;
-      renderGrid();
+      updateSelectionHighlight();
       updateLockButton();
+      syncSimilarStrip();
     });
     grid.appendChild(cell);
   }
@@ -219,8 +246,9 @@ function renderRecommendations(payload) {
       const usedSet = currentUsedChampions();
       if (usedSet.has(r.champion)) return;
       state.selected = r.champion;
-      renderGrid();
+      updateSelectionHighlight();
       updateLockButton();
+      syncSimilarStrip();
     });
     list.appendChild(card);
   }
@@ -256,6 +284,131 @@ function renderWinProbs(payload) {
   document.getElementById('red-wp').textContent = ((1 - blue) * 100).toFixed(1) + '%';
 }
 
+function similarStripLeadIn() {
+  const action = DRAFT_ORDER[state.step];
+  if (action && action.type === 'ban') return 'Similar champs — ';
+  return 'Similar picks — ';
+}
+
+function clearSimilarStrip() {
+  similarStripFetchNonce += 1;
+  const panel = document.getElementById('similar-panel');
+  const strip = document.getElementById('similar-strip');
+  if (!panel || !strip) return;
+  panel.classList.add('hidden');
+  strip.innerHTML = '';
+  strip.classList.remove('similar-strip-loading');
+}
+
+function renderSimilarStripSkeleton(n) {
+  const strip = document.getElementById('similar-strip');
+  if (!strip) return;
+  strip.innerHTML = '';
+  for (let i = 0; i < n; i += 1) {
+    const d = document.createElement('div');
+    d.className = 'similar-cell-skel';
+    d.innerHTML = `
+      <div class="similar-portrait"><div class="similar-skel-block"></div></div>
+      <div class="similar-meta">
+        <div class="similar-skel-bar"></div>
+        <div class="similar-skel-bar short"></div>
+      </div>`;
+    strip.appendChild(d);
+  }
+}
+
+function renderSimilarNeighbors(neighbors) {
+  const strip = document.getElementById('similar-strip');
+  if (!strip) return;
+  strip.classList.remove('similar-strip-loading');
+  strip.innerHTML = '';
+  const usedSet = currentUsedChampions();
+  let shown = 0;
+  for (const nb of neighbors) {
+    const name = nb.name;
+    if (!name || usedSet.has(name)) continue;
+    const simPct = nb.similarity != null ? (nb.similarity * 100).toFixed(0) + '%' : '';
+    const w = nb.historical_winrate != null ? (nb.historical_winrate * 100).toFixed(1) : '—';
+    const cell = document.createElement('div');
+    cell.className = 'similar-cell similar-neighbor';
+    cell.innerHTML = `
+      <div class="similar-portrait"><img src="${nb.img || ''}" alt="${name}"
+          onerror="this.style.display='none'"></div>
+      <div class="similar-meta">
+        <div class="similar-name">${name}</div>
+        <div class="similar-sub">${simPct} hist ${w}%</div>
+      </div>`;
+    cell.addEventListener('click', () => {
+      const u = currentUsedChampions();
+      if (u.has(name)) return;
+      state.selected = name;
+      updateSelectionHighlight();
+      updateLockButton();
+      syncSimilarStrip();
+    });
+    strip.appendChild(cell);
+    shown += 1;
+    if (shown >= 8) break;
+  }
+  if (!shown) strip.innerHTML = '<div class="similar-empty">No similar champions available.</div>';
+}
+
+async function syncSimilarStrip() {
+  const panel = document.getElementById('similar-panel');
+  const label = document.getElementById('similar-label');
+  if (!panel || !label) return;
+  if (!state.similarAvailable || !state.selected) {
+    clearSimilarStrip();
+    return;
+  }
+
+  panel.classList.remove('hidden');
+  label.textContent = similarStripLeadIn() + state.selected;
+
+  const cached = state.similarCache.get(state.selected);
+  if (cached) {
+    const strip = document.getElementById('similar-strip');
+    if (strip) strip.classList.remove('similar-strip-loading');
+    renderSimilarNeighbors(cached.neighbors || []);
+    return;
+  }
+
+  const strip = document.getElementById('similar-strip');
+  if (!strip) return;
+
+  similarStripFetchNonce += 1;
+  const nonce = similarStripFetchNonce;
+  const anchor = state.selected;
+
+  strip.classList.add('similar-strip-loading');
+  const hasStaleNeighbors = !!strip.querySelector('.similar-neighbor');
+  if (!hasStaleNeighbors) {
+    renderSimilarStripSkeleton(8);
+  }
+
+  const q = '?champion=' + encodeURIComponent(anchor) + '&k=16';
+  let resp = {};
+  try {
+    resp = await fetch('/api/similar' + q).then(r => r.json());
+  } catch (_e) {
+    resp = {};
+  }
+
+  if (nonce !== similarStripFetchNonce) return;
+  if (state.selected !== anchor) return;
+
+  strip.classList.remove('similar-strip-loading');
+
+  if (!resp.available) {
+    strip.innerHTML =
+      '<div class="similar-empty">Similar champions unavailable.</div>';
+    return;
+  }
+
+  state.similarCache.set(anchor, resp);
+  renderSimilarNeighbors(resp.neighbors || []);
+}
+
 // ---------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------
@@ -268,6 +421,7 @@ function buildPayload() {
 }
 
 async function refresh() {
+  clearSimilarStrip();
   renderBans();
   renderPicks();
   renderGrid();
@@ -305,6 +459,7 @@ async function refresh() {
   renderWinProbs(payload);
   renderRecommendations(action.type === 'pick' ? payload : null);
   updateLockButton();
+  await syncSimilarStrip();
 }
 
 async function showCompletionOverlay() {
@@ -395,6 +550,7 @@ function resetDraft() {
   state.bluePicks = [null, null, null, null, null];
   state.redPicks  = [null, null, null, null, null];
   state.selected = null;
+  state.similarCache = new Map();
   document.getElementById('complete-overlay').classList.add('hidden');
   refresh();
 }

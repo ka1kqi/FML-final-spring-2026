@@ -45,6 +45,11 @@ Default port `8090` (Streamlit dashboard uses 8501, simulator usually
 * **Team panels**: 5 role-fixed pick slots per side with live win-prob.
 * **Champion grid**: 170+ champion portraits (DDragon CDN), filterable
   by role and searchable by name.
+* **Similar champs / Similar picks** (when `artifacts/champion_embeddings.npy`
+  exists): after you select a champion in the grid, a strip shows top
+  cosine neighbors in the learned embedding space. The banner reads
+  **Similar champs** during ban steps and **Similar picks** during pick
+  steps. Banned / already-picked neighbors are skipped in the UI.
 * **AI Picks**: top-5 candidates with calibrated win prob, delta over
   current state, and human-readable notes ("good synergy with current
   allies", "warning: weak matchup vs enemy picks", etc.).
@@ -69,21 +74,22 @@ The web app is the **demo-day** UI. The dashboard is for the **paper**.
 
 ```
 local_web_app/
-├── server.py                     ~190 LoC. Flask + 4 endpoints. Imports
-│                                 lol_draft_pipeline directly; caches
-│                                 score functions per model; reads the
-│                                 latest run's metrics_summary.json.
+├── server.py                     Flask. Imports lol_draft_pipeline
+│                                 directly; caches score functions per
+│                                 model; reads ``metrics_summary.json``;
+│                                 optional cosine-similar champs from
+│                                 ``champion_embeddings.npy``.
 ├── static/
-│   ├── index.html                ~120 LoC. Layout: meta bar / ban phase /
-│   │                             team panels / champ grid / AI picks /
-│   │                             completion overlay.
+│   ├── index.html                Layout: meta bar / ban phase / team
+│   │                             panels / similar strip / champ grid /
+│   │                             AI picks / completion overlay.
 │   ├── style.css                 ~520 LoC. LoL-themed dark palette with
 │   │                             gold accent. Responsive grid for
 │   │                             champion portraits.
-│   └── app.js                    ~330 LoC. Owns the 20-step draft order,
-│                                 selection state, calls /api/recommend
-│                                 and /api/evaluate to keep the win-prob
-│                                 gauges and AI Picks live.
+│   └── app.js                    Owns the 20-step draft order, selection
+│                                 state, calls ``/api/recommend``,
+│                                 ``/api/evaluate``, and ``/api/similar``
+│                                 (when enabled) for the UI.
 ├── requirements_web_app.txt      flask
 └── README_WEB_APP.md             this file
 ```
@@ -92,8 +98,9 @@ local_web_app/
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET`  | `/api/meta`        | dataset / model metadata for the meta bar |
+| `GET`  | `/api/meta`        | dataset / model metadata for the meta bar; includes `similar_embeddings_available` |
 | `GET`  | `/api/champions`   | sorted champion list with DDragon image URL + roles played in our data |
+| `GET`  | `/api/similar`     | top-K champions by cosine similarity in embedding space (`k` query param, default 8, max 16). Returns `{available: false}` if `champion_embeddings.npy` is missing or shape-mismatched. |
 | `POST` | `/api/recommend`   | top-K calibrated recommendations + current `blue_win_prob` |
 | `POST` | `/api/evaluate`    | `blue_win_prob` for a (possibly partial) draft |
 
@@ -119,6 +126,12 @@ calibration on the validation split. So a 60% number really means
 * **Champion not in vocab warning in console** — that champion appeared
   too rarely in training data; it's still pickable but the model treats
   it as `<UNK>`.
+* **No similar-champions strip** — the web app only enables it when
+  `artifacts/champion_embeddings.npy` is present and its first
+  dimension matches `champion_to_idx.json`. Re-run training so the
+  hybrid / TeamCompNet path writes embeddings; see
+  [README_PIPELINE.md](../README_PIPELINE.md) (artifact tree under
+  `artifacts/`).
 
 ---
 
