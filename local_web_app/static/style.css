@@ -178,7 +178,7 @@ button { font-family: inherit; cursor: pointer; }
 
 .main-area {
   display: grid;
-  grid-template-columns: 1fr 2.4fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2.4fr) minmax(0, 1fr);
   gap: 14px;
   padding: 14px;
   overflow: hidden;
@@ -193,6 +193,7 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   gap: 10px;
   border-top: 2px solid;
+  min-width: 0;
 }
 .team-panel.blue { border-color: var(--blue-team); }
 .team-panel.red  { border-color: var(--red-team); }
@@ -257,6 +258,7 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 6px;
   padding: 14px;
   min-height: 0;
+  min-width: 0;
 }
 .center-top { text-align: center; padding-bottom: 12px; }
 .phase-indicator {
@@ -353,14 +355,25 @@ button { font-family: inherit; cursor: pointer; }
   overflow: hidden; text-overflow: ellipsis;
 }
 
-.similar-panel.hidden { display: none; }
+/* No embeddings — omit panel from layout entirely. */
+.similar-panel-disabled {
+  display: none !important;
+}
+
+/* Embeddings OK: strip mounts only while a champ is selected (collapsed = no vertical gap). */
 .similar-panel {
   flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 6px 8px 8px;
   margin-bottom: 8px;
+  box-sizing: border-box;
+}
+.similar-panel.hidden:not(.similar-panel-disabled) {
+  display: none;
 }
 .similar-label {
   font-size: 10px; font-weight: 800;
@@ -372,6 +385,7 @@ button { font-family: inherit; cursor: pointer; }
   gap: 6px;
   flex-wrap: nowrap;
   overflow-x: auto;
+  max-width: 100%;
   padding-bottom: 2px;
   min-height: 56px;
   align-items: stretch;

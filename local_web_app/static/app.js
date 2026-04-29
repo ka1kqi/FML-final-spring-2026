@@ -294,10 +294,20 @@ function clearSimilarStrip() {
   similarStripFetchNonce += 1;
   const panel = document.getElementById('similar-panel');
   const strip = document.getElementById('similar-strip');
+  const label = document.getElementById('similar-label');
   if (!panel || !strip) return;
-  panel.classList.add('hidden');
   strip.innerHTML = '';
   strip.classList.remove('similar-strip-loading');
+  if (label) label.textContent = '';
+  if (!state.similarAvailable) {
+    panel.classList.add('similar-panel-disabled');
+    panel.classList.remove('hidden');
+    panel.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  panel.classList.remove('similar-panel-disabled');
+  panel.classList.add('hidden');
+  panel.setAttribute('aria-hidden', 'true');
 }
 
 function renderSimilarStripSkeleton(n) {
@@ -362,7 +372,8 @@ async function syncSimilarStrip() {
     return;
   }
 
-  panel.classList.remove('hidden');
+  panel.classList.remove('similar-panel-disabled', 'hidden');
+  panel.removeAttribute('aria-hidden');
   label.textContent = similarStripLeadIn() + state.selected;
 
   const cached = state.similarCache.get(state.selected);

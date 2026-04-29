@@ -49,7 +49,8 @@ Default port `8090` (Streamlit dashboard uses 8501, simulator usually
   exists): after you select a champion in the grid, a strip shows top
   cosine neighbors in the learned embedding space. The banner reads
   **Similar champs** during ban steps and **Similar picks** during pick
-  steps. Banned / already-picked neighbors are skipped in the UI.
+  steps. The strip only appears once a champion is selected. 
+  Banned / already-picked neighbors are skipped in the UI.
 * **AI Picks**: top-5 candidates with calibrated win prob, delta over
   current state, and human-readable notes ("good synergy with current
   allies", "warning: weak matchup vs enemy picks", etc.).
