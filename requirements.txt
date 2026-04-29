@@ -10,3 +10,5 @@ seaborn
 pyyaml
 tqdm
 python-dotenv
+streamlit
+flask
