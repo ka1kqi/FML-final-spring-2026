@@ -60,7 +60,8 @@ function getUsed() {
 }
 
 function getChampImg(name) {
-  const c = allChampions.find(ch => ch.name === name);
+  if (!name) return "";
+  const c = allChampions.find(ch => ch.name.toLowerCase() === name.toLowerCase());
   return c ? c.img : "";
 }
 
@@ -575,4 +576,260 @@ function renderCompleteOverlay() {
       <div style="font-size:10px;margin-top:4px">${p}</div>
     </div>
   `).join("");
+}
+// ---------- Tab Switching ----------
+function switchTab(tab) {
+  document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".view-container").forEach(v => v.classList.remove("active"));
+  
+  document.getElementById(`tab-${tab}`).classList.add("active");
+  document.getElementById(`view-${tab}`).classList.add("active");
+  
+  // Close any open analysis dropdowns
+  document.querySelectorAll(".analysis-grid-dropdown").forEach(d => d.classList.add("hidden"));
+}
+
+// ---------- Analysis Grid Selector Logic ----------
+function showGridDropdown(type) {
+  // Close other dropdowns
+  document.querySelectorAll(".analysis-grid-dropdown").forEach(d => d.classList.add("hidden"));
+  
+  const dropdown = document.getElementById(`analysis-grid-${type}`);
+  renderGridToDropdown(dropdown, type, "");
+  dropdown.classList.remove("hidden");
+}
+
+function filterGridDropdown(type, query) {
+  const dropdown = document.getElementById(`analysis-grid-${type}`);
+  renderGridToDropdown(dropdown, type, query);
+}
+
+function renderGridToDropdown(container, type, query) {
+  container.innerHTML = "";
+  const filtered = allChampions.filter(c => c.name.toLowerCase().includes(query.toLowerCase()));
+  
+  filtered.forEach(champ => {
+    const cell = document.createElement("div");
+    cell.className = "dropdown-grid-cell";
+    cell.title = champ.name;
+    cell.innerHTML = `<img src="${champ.img}" alt="${champ.name}">`;
+    cell.onclick = () => {
+      selectAnalysisChamp(type, champ.name);
+      container.classList.add("hidden");
+    };
+    container.appendChild(cell);
+  });
+}
+
+// Close dropdowns on outside click
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".analysis-search")) {
+    document.querySelectorAll(".analysis-grid-dropdown").forEach(d => d.classList.add("hidden"));
+  }
+});
+
+// ---------- Champion Analysis Logic ----------
+let analysisMainChamp = null;
+let analysisCompareChamp = null;
+let analysisSelectedRole = "MIDDLE"; // Default
+
+function setAnalysisRole(role) {
+  analysisSelectedRole = role;
+  // Update buttons
+  document.querySelectorAll(".role-mini-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.getAttribute("onclick").includes(role));
+  });
+  fetchAnalysisData();
+}
+
+async function selectAnalysisChamp(type, name) {
+  document.getElementById(`analysis-search-${type}`).value = name;
+  
+  if (type === "main") {
+    analysisMainChamp = name;
+  } else {
+    analysisCompareChamp = name;
+  }
+  await fetchAnalysisData();
+}
+
+async function fetchAnalysisData() {
+  if (!analysisMainChamp) return;
+
+  let url = `/api/analysis?champ=${encodeURIComponent(analysisMainChamp)}&role=${analysisSelectedRole}`;
+  if (analysisCompareChamp) {
+    url += `&compare=${encodeURIComponent(analysisCompareChamp)}`;
+  }
+
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    renderAnalysis(data);
+  } catch (e) {
+    console.error("Failed to fetch analysis data:", e);
+  }
+}
+
+function renderAnalysis(data) {
+  // Update Background Splash
+  const splash = document.getElementById("analysis-bg-splash");
+  const champObj = allChampions.find(c => c.name.toLowerCase() === data.champion.toLowerCase());
+  const ddragonId = champObj ? champObj.id : data.champion.replace(/[^a-zA-Z]/g, '');
+  
+  const splashUrl = `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${ddragonId}_0.jpg`;
+  
+  splash.style.backgroundImage = `url(${splashUrl})`;
+  splash.style.opacity = "1";
+
+  // Main Content
+  document.getElementById("analysis-main-content").classList.remove("hidden");
+  document.getElementById("analysis-main-name").textContent = data.champion;
+  document.getElementById("analysis-main-img").src = getChampImg(data.champion);
+  
+  // Update WR
+  const wrEl = document.getElementById("analysis-wr");
+  wrEl.textContent = `WR ${data.win_rate}%`;
+  wrEl.style.background = data.win_rate >= 50 ? "linear-gradient(135deg, #00C8FF, #0044FF)" : "linear-gradient(135deg, #FF4655, #880000)";
+
+  // Role Bars
+  const roleContainer = document.getElementById("analysis-role-bars");
+  roleContainer.innerHTML = "";
+  const sortedRoles = Object.entries(data.roles).sort((a, b) => b[1] - a[1]);
+  sortedRoles.forEach(([role, pct]) => {
+    const row = document.createElement("div");
+    row.className = "role-stat-row";
+    row.innerHTML = `
+      <div class="role-stat-label">
+        <span>${role}</span>
+        <span>${pct}%</span>
+      </div>
+      <div class="role-stat-bar-bg">
+        <div class="role-stat-bar-fill" style="width: ${pct}%"></div>
+      </div>
+    `;
+    roleContainer.appendChild(row);
+  });
+
+  // Meta Lists
+  document.getElementById("analysis-lists-content").classList.remove("hidden");
+  
+  document.getElementById("header-synergies").textContent = `Cross-Role Synergies`;
+  const roleLabel = analysisSelectedRole === "MIDDLE" ? "Mid" : analysisSelectedRole;
+  document.getElementById("header-counters").textContent = `${data.champion} ${roleLabel} Counters`;
+  document.getElementById("header-countered-by").textContent = `Threats to ${data.champion} ${roleLabel}`;
+
+  // Role Grouped Synergies
+  const synGrid = document.getElementById("list-synergies-grouped");
+  synGrid.innerHTML = "";
+  
+  Object.entries(data.role_synergies).forEach(([role, champs]) => {
+    if (role === analysisSelectedRole) return; // Don't show synergy with same role
+    if (champs.length === 0) return;
+
+    const section = document.createElement("div");
+    section.className = "synergy-role-section";
+    section.innerHTML = `<h4>Best ${role} Partners</h4>`;
+    
+    const list = document.createElement("div");
+    list.className = "meta-list";
+    champs.forEach(item => {
+      const div = document.createElement("div");
+      div.className = "meta-item";
+      div.innerHTML = `
+        <img src="${getChampImg(item.champion)}" alt="${item.champion}">
+        <div class="meta-item-info">
+          <div class="meta-item-name">${item.champion}</div>
+          <div class="meta-item-score positive">Score: ${item.score.toFixed(2)}</div>
+        </div>
+      `;
+      div.onclick = () => {
+        analysisCompareChamp = item.champion;
+        fetchAnalysisData();
+      };
+      list.appendChild(div);
+    });
+    section.appendChild(list);
+    synGrid.appendChild(section);
+  });
+
+  renderMetaList("list-counters", data.counters, true);
+  renderMetaList("list-countered-by", data.countered_by, false);
+
+  // Comparison
+  if (data.comparison) {
+    document.getElementById("analysis-compare-empty").classList.add("hidden");
+    document.getElementById("analysis-compare-content").classList.remove("hidden");
+    
+    document.getElementById("compare-main-img").src = getChampImg(analysisMainChamp);
+    document.getElementById("compare-other-img").src = getChampImg(analysisCompareChamp);
+    
+    // Verdict Text Logic
+    const verdictEl = document.getElementById("comparison-verdict");
+    const descEl = document.getElementById("verdict-desc");
+    
+    const syn = data.comparison.synergy_score;
+    const match = data.comparison.matchup_score;
+
+    if (match > 0.08) {
+      verdictEl.textContent = "HARD COUNTER";
+      descEl.textContent = `${analysisMainChamp} mathematically dominates this matchup. Expect significant advantage in direct trades.`;
+    } else if (match > 0.04) {
+      verdictEl.textContent = "FAVORABLE";
+      descEl.textContent = `${analysisMainChamp} has a statistical edge. Solid pick into ${analysisCompareChamp}.`;
+    } else if (syn > 0.15) {
+      verdictEl.textContent = "GOD-TIER SYNERGY";
+      descEl.textContent = `A legendary pairing. Their combined kit utility creates a massive force multiplier for the team.`;
+    } else if (syn > 0.08) {
+      verdictEl.textContent = "STRONG SYNERGY";
+      descEl.textContent = `These champions complement each other's playstyles effectively.`;
+    } else {
+      verdictEl.textContent = "NEUTRAL";
+      descEl.textContent = "Standard interaction level. No significant mathematical advantage or disadvantage detected.";
+    }
+
+    // Gauges
+    const details = document.querySelector(".comparison-details");
+    details.innerHTML = `
+      <div class="gauge-item">
+        <div class="gauge-label">Synergy Strength</div>
+        <div class="gauge-value">${(syn * 10).toFixed(1)}</div>
+        <div class="gauge-bar-bg">
+          <div class="gauge-bar-fill synergy" style="width: ${Math.min(100, syn * 400)}%"></div>
+        </div>
+      </div>
+      <div class="gauge-item">
+        <div class="gauge-label">Counter Threat</div>
+        <div class="gauge-value">${(match * 10).toFixed(1)}</div>
+        <div class="gauge-bar-bg">
+          <div class="gauge-bar-fill matchup" style="width: ${Math.min(100, Math.abs(match) * 600)}%"></div>
+        </div>
+      </div>
+    `;
+  } else {
+    document.getElementById("analysis-compare-empty").classList.remove("hidden");
+    document.getElementById("analysis-compare-content").classList.add("hidden");
+  }
+}
+
+function renderMetaList(containerId, list, isPositive) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = "";
+  list.forEach(item => {
+    const div = document.createElement("div");
+    div.className = "meta-item";
+    const scoreClass = isPositive ? (item.score > 0 ? "positive" : "") : (item.score > 0 ? "negative" : "");
+    div.innerHTML = `
+      <img src="${getChampImg(item.champion)}" alt="${item.champion}">
+      <div class="meta-item-info">
+        <div class="meta-item-name">${item.champion}</div>
+        <div class="meta-item-score ${scoreClass}">Score: ${item.score.toFixed(3)}</div>
+      </div>
+    `;
+    div.onclick = () => {
+      // Clicking a meta list item updates the comparison
+      analysisCompareChamp = item.champion;
+      fetchAnalysisData();
+    };
+    container.appendChild(div);
+  });
 }

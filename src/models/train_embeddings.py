@@ -126,8 +126,7 @@ class CustomMatrixFactorization:
             if (epoch + 1) % 10 == 0:
                 rmse = np.sqrt(total_error / n_pairs)
                 print(f"      Epoch {epoch+1}/{self.epochs} | RMSE: {rmse:.4f}")
-                
-        return self.U
+        return self.U, self.V
 
 def train_champion2vec(comp_df, embed_dim=64):
     """
@@ -145,18 +144,18 @@ def train_champion2vec(comp_df, embed_dim=64):
     
     # 3. Factorize matrices
     print("  Running Custom Matrix Factorization...")
-    half_dim = embed_dim // 2
+    quarter_dim = embed_dim // 4  # 64 // 4 = 16 dimensions per component
     n_champs = len(vocab)
     
-    mf_syn = CustomMatrixFactorization(n_champs, n_components=half_dim, lr=0.01, reg=0.02, epochs=50)
-    syn_embeds = mf_syn.fit_transform(S, name="Synergy")
+    mf_syn = CustomMatrixFactorization(n_champs, n_components=quarter_dim, lr=0.01, reg=0.02, epochs=50)
+    u_syn, v_syn = mf_syn.fit_transform(S, name="Synergy")
     
-    mf_match = CustomMatrixFactorization(n_champs, n_components=half_dim, lr=0.01, reg=0.02, epochs=50)
-    match_embeds = mf_match.fit_transform(M, name="Matchup")
+    mf_match = CustomMatrixFactorization(n_champs, n_components=quarter_dim, lr=0.01, reg=0.02, epochs=50)
+    u_match, v_match = mf_match.fit_transform(M, name="Matchup")
     
     # 4. Concatenate and normalize
-    # Each champion gets [32 synergy features | 32 matchup features]
-    embeddings = np.hstack([syn_embeds, match_embeds])
+    # Each champion gets [16 U_syn | 16 V_syn | 16 U_match | 16 V_match] = 64 dimensions total
+    embeddings = np.hstack([u_syn, v_syn, u_match, v_match])
     
     # L2 Normalize
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)

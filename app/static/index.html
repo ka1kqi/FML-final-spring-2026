@@ -8,7 +8,14 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div class="draft-container">
+  <!-- ===== NAVIGATION TABS ===== -->
+  <div class="nav-tabs">
+    <div class="nav-tab active" id="tab-draft" onclick="switchTab('draft')">DRAFT SIMULATOR</div>
+    <div class="nav-tab" id="tab-analysis" onclick="switchTab('analysis')">CHAMPION ANALYSIS</div>
+  </div>
+
+  <div class="view-container active" id="view-draft">
+    <div class="draft-container">
 
     <!-- ===== BAN PHASE BAR ===== -->
     <div class="ban-phase">
@@ -80,32 +87,136 @@
       </div>
     </div>
 
+    </div>
+
+    <!-- ===== DRAFT COMPLETE OVERLAY ===== -->
+    <div class="draft-complete-overlay hidden" id="complete-overlay">
+      <h2>Draft Complete</h2>
+      <div style="display:flex;gap:40px;align-items:center;margin-bottom:24px">
+        <div>
+          <div class="result-label blue" style="text-align:center;margin-bottom:8px">BLUE TEAM</div>
+          <div id="result-blue-team" style="display:flex;gap:12px"></div>
+        </div>
+        <div style="font-size:24px;font-weight:800;color:var(--gold)">VS</div>
+        <div>
+          <div class="result-label red" style="text-align:center;margin-bottom:8px">RED TEAM</div>
+          <div id="result-red-team" style="display:flex;gap:12px"></div>
+        </div>
+      </div>
+      
+      <div style="margin-bottom:24px; width:400px; text-align:center">
+        <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px; text-transform:uppercase; letter-spacing:2px">Predicted Comp Score & Win Probability</div>
+        <div class="result-bar" style="width:100%; display:flex; height:32px; background:var(--bg-card); border-radius:4px; overflow:hidden">
+          <div id="win-bar-blue" class="result-fill blue" style="width:50%">50.0%</div>
+          <div id="win-bar-red" class="result-fill red" style="width:50%">50.0%</div>
+        </div>
+      </div>
+
+      <button class="lock-btn" onclick="resetDraft()" style="margin-top:16px">NEW DRAFT</button>
+    </div>
   </div>
 
-  <!-- ===== DRAFT COMPLETE OVERLAY ===== -->
-  <div class="draft-complete-overlay hidden" id="complete-overlay">
-    <h2>Draft Complete</h2>
-    <div style="display:flex;gap:40px;align-items:center;margin-bottom:24px">
-      <div>
-        <div class="result-label blue" style="text-align:center;margin-bottom:8px">BLUE TEAM</div>
-        <div id="result-blue-team" style="display:flex;gap:12px"></div>
+  <!-- ===== CHAMPION ANALYSIS VIEW ===== -->
+  <div class="view-container" id="view-analysis">
+    <div class="analysis-bg-splash" id="analysis-bg-splash"></div>
+    <div class="analysis-dashboard">
+      
+      <!-- Left Panel: Main Champion Selection & Stats -->
+      <div class="analysis-panel left">
+        <div class="analysis-header">Champion Overview</div>
+        <div class="analysis-search">
+          <input type="text" id="analysis-search-main" placeholder="Search champion..." onfocus="showGridDropdown('main')" oninput="filterGridDropdown('main', this.value)">
+          <div id="analysis-grid-main" class="analysis-grid-dropdown hidden"></div>
+        </div>
+        
+        <div class="analysis-content-scroll">
+          <div id="analysis-main-content" class="hidden">
+          <div class="analysis-card main-champ">
+            <div class="main-champ-header">
+              <div class="wr-badge" id="analysis-wr">WR 50%</div>
+              <img id="analysis-main-img" src="" alt="">
+              <h2 id="analysis-main-name">Champion Name</h2>
+              <div class="analysis-role-selector">
+                <button class="role-mini-btn" onclick="setAnalysisRole('TOP')" title="Top">T</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('JUNGLE')" title="Jungle">J</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('MIDDLE')" title="Mid">M</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('BOTTOM')" title="ADC">A</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('UTILITY')" title="Support">S</button>
+              </div>
+            </div>
+            <div class="analysis-roles">
+              <h3>Role Distribution</h3>
+              <div id="analysis-role-bars"></div>
+            </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div style="font-size:24px;font-weight:800;color:var(--gold)">VS</div>
-      <div>
-        <div class="result-label red" style="text-align:center;margin-bottom:8px">RED TEAM</div>
-        <div id="result-red-team" style="display:flex;gap:12px"></div>
-      </div>
-    </div>
-    
-    <div style="margin-bottom:24px; width:400px; text-align:center">
-      <div style="font-size:12px; font-weight:700; color:var(--text-secondary); margin-bottom:8px; text-transform:uppercase; letter-spacing:2px">Predicted Comp Score & Win Probability</div>
-      <div class="result-bar" style="width:100%; display:flex; height:32px; background:var(--bg-card); border-radius:4px; overflow:hidden">
-        <div id="win-bar-blue" class="result-fill blue" style="width:50%">50.0%</div>
-        <div id="win-bar-red" class="result-fill red" style="width:50%">50.0%</div>
-      </div>
-    </div>
 
-    <button class="lock-btn" onclick="resetDraft()" style="margin-top:16px">NEW DRAFT</button>
+      <!-- Center Panel: Direct Comparison -->
+      <div class="analysis-panel center">
+        <div class="analysis-header">Deep Intelligence</div>
+        
+        <div class="analysis-search">
+          <input type="text" id="analysis-search-compare" placeholder="Compare with..." onfocus="showGridDropdown('compare')" oninput="filterGridDropdown('compare', this.value)">
+          <div id="analysis-grid-compare" class="analysis-grid-dropdown hidden"></div>
+        </div>
+
+        <div class="analysis-content-scroll">
+          <div id="analysis-compare-content" class="hidden">
+          <div class="verdict-container">
+            <div id="comparison-verdict" class="verdict-text">Relationship Verdict</div>
+            <div id="verdict-desc" class="verdict-desc">Analyzing mathematical synergies...</div>
+          </div>
+          
+          <div class="comparison-card">
+            <div class="comparison-visual">
+              <img id="compare-main-img" src="" alt="">
+              <div class="vs-text">VS</div>
+              <img id="compare-other-img" src="" alt="">
+            </div>
+            <div id="comparison-status" class="comparison-status">Relationship</div>
+            <div class="comparison-details">
+              <div class="detail-row">
+                <span>Synergy Score:</span>
+                <span id="compare-syn-score">0.00</span>
+              </div>
+              <div class="detail-row">
+                <span>Matchup Score:</span>
+                <span id="compare-match-score">0.00</span>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+        <div id="analysis-compare-empty" class="analysis-empty">
+          Select two champions to see their direct relationship
+        </div>
+      </div>
+
+      <!-- Right Panel: Top Lists -->
+      <div class="analysis-panel right">
+        <div class="analysis-header">Meta Relationships</div>
+        
+        <div class="analysis-content-scroll">
+          <div id="analysis-lists-content" class="hidden">
+          <div class="meta-list-group">
+            <h3 id="header-synergies">Role-Based Synergies</h3>
+            <div id="list-synergies-grouped" class="synergy-role-grid"></div>
+          </div>
+          <div class="meta-list-group">
+            <h3 id="header-counters">Strong Against</h3>
+            <div id="list-counters" class="meta-list"></div>
+          </div>
+          <div class="meta-list-group">
+            <h3 id="header-countered-by">Weak Against</h3>
+            <div id="list-countered-by" class="meta-list"></div>
+          </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
   </div>
 
   <script src="/static/app.js"></script>

@@ -25,6 +25,7 @@ from src.inference.draft_recommender import (
 )
 from src.features.synergy_features import build_candidate_features
 import numpy as np
+import pandas as pd
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
@@ -44,6 +45,29 @@ for role, champs in role_options.items():
     for c in champs:
         champ_roles.setdefault(c, []).append(role)
 
+# Load full composition data to calculate exact stats
+print("Calculating exact stats for Analysis Page...")
+comp_df = pd.read_csv(PROJECT_ROOT / "data/raw/compositions_s16.csv", usecols=["champion_name", "position", "win"])
+
+champ_role_stats: dict[str, dict[str, float]] = {}
+champ_win_rates: dict[str, float] = {}
+lane_pools: dict[str, list[str]] = {r: [] for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]}
+
+for champ, group in comp_df.groupby("champion_name"):
+    # Role Dist
+    role_counts = group["position"].value_counts(normalize=True)
+    champ_role_stats[champ] = {role: round(pct * 100, 1) for role, pct in role_counts.items()}
+    
+    # Win Rate
+    champ_win_rates[champ] = round(group["win"].mean() * 100, 2)
+    
+    # Lane Pool (10% threshold)
+    for role, pct in role_counts.items():
+        if pct >= 0.10:
+            lane_pools[role].append(champ)
+
+print("Stats and Lane Pools calculated.")
+
 # DDragon name overrides (dataset name -> DDragon key)
 DDRAGON_KEY_MAP = {
     "FiddleSticks": "Fiddlesticks",
@@ -54,6 +78,8 @@ DDRAGON_KEY_MAP = {
     "KSante": "KSante",
     "Nunu": "Nunu",
     "Renata": "Renata",
+    "Wukong": "MonkeyKing",
+    "Leblanc": "Leblanc",
 }
 
 DDRAGON_VERSION = "16.8.1"
@@ -77,6 +103,7 @@ def api_champions():
         )
         data.append({
             "name": name,
+            "id": ddragon_key,
             "img": img_url,
             "roles": champ_roles.get(name, []),
         })
@@ -186,6 +213,78 @@ def api_evaluate():
         "red_score": round(avg_red_score, 1),
         "red_win_prob": red_win_prob
     })
+
+
+@app.route("/api/analysis", methods=["GET"])
+def api_analysis():
+    champ = request.args.get("champ")
+    compare = request.args.get("compare")
+    selected_role = request.args.get("role") # e.g. MIDDLE
+    
+    if not champ or champ not in embed_dict:
+        return jsonify({"error": "Invalid or missing champion"}), 400
+        
+    a = embed_dict[champ]
+    u_syn_a, v_syn_a = a[0:16], a[16:32]
+    u_match_a, v_match_a = a[32:48], a[48:64]
+    
+    response = {
+        "champion": champ,
+        "win_rate": champ_win_rates.get(champ, 50.0),
+        "roles": champ_role_stats.get(champ, {})
+    }
+    
+    # Calculate scores against all other champions
+    synergy_data = []
+    counter_data = []
+    
+    for champ_b, b in embed_dict.items():
+        if champ == champ_b: continue
+        u_syn_b, v_syn_b = b[0:16], b[16:32]
+        u_match_b, v_match_b = b[32:48], b[48:64]
+        
+        syn = float(np.dot(u_syn_a, v_syn_b) + np.dot(u_syn_b, v_syn_a))
+        a_counters_b = float(np.dot(u_match_a, v_match_b) - np.dot(u_match_b, v_match_a))
+        
+        synergy_data.append({"champion": champ_b, "score": syn})
+        counter_data.append({"champion": champ_b, "score": a_counters_b})
+        
+    # 1. Group Synergies by Role (Top 3 for each other role)
+    roles_order = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+    role_synergies = {}
+    for r in roles_order:
+        # Filter synergy_data to champs in this role pool
+        pool = lane_pools.get(r, [])
+        r_synergies = [s for s in synergy_data if s["champion"] in pool]
+        r_synergies.sort(key=lambda x: x["score"], reverse=True)
+        role_synergies[r] = r_synergies[:3]
+    
+    response["role_synergies"] = role_synergies
+    
+    # 2. Filter Counters by Lane (if role selected)
+    if selected_role and selected_role in lane_pools:
+        lane_pool = lane_pools[selected_role]
+        filtered_counters = [c for c in counter_data if c["champion"] in lane_pool]
+    else:
+        filtered_counters = counter_data
+
+    filtered_counters.sort(key=lambda x: x["score"], reverse=True)
+    
+    response["counters"] = filtered_counters[:5]
+    response["countered_by"] = [{"champion": c["champion"], "score": -c["score"]} for c in filtered_counters[-5:]][::-1]
+    
+    if compare and compare in embed_dict:
+        syn_val = next(s["score"] for s in synergy_data if s["champion"] == compare)
+        match_val = next(s["score"] for s in counter_data if s["champion"] == compare)
+        
+        response["comparison"] = {
+            "champion": compare,
+            "synergy_score": round(syn_val, 4),
+            "matchup_score": round(match_val, 4),
+            "status": f"{champ} vs {compare}"
+        }
+        
+    return jsonify(response)
 
 
 if __name__ == "__main__":

@@ -24,33 +24,31 @@ def preprocess_matches():
     s16_df['dpm'] = s16_df['totalDamageDealtToChampions'] / (s16_df['gameDuration'] / 60.0)
     s16_df['kda'] = (s16_df['kills'] + s16_df['assists']) / s16_df['deaths'].clip(lower=1)
     
-    # Z-score normalize the metrics across all players
+    # Z-score normalize the metrics within roles (teamPosition)
     for col in ['gpm', 'dpm', 'kda', 'team_dragon_kills', 'team_tower_kills']:
-        s16_df[f'{col}_z'] = (s16_df[col] - s16_df[col].mean()) / s16_df[col].std()
+        s16_df[f'{col}_z'] = s16_df.groupby('teamPosition')[col].transform(lambda x: (x - x.mean()) / x.std())
         
     # Composite score
-    # Win brings a flat +5 or 0 base
+    # Win brings a flat +3 or 0 base
     s16_df['raw_champ_score'] = (
-        s16_df['win'].astype(int) * 5.0 +
+        s16_df['win'].astype(int) * 3.0 +
         s16_df['kda_z'] * 1.5 +
-        s16_df['gpm_z'] * 1.0 +
-        s16_df['dpm_z'] * 1.0 +
-        s16_df['team_dragon_kills_z'] * 0.5 +
-        s16_df['team_tower_kills_z'] * 0.5
+        s16_df['gpm_z'] * 0.6 +
+        s16_df['dpm_z'] * 0.6 +
+        s16_df['team_dragon_kills_z'] * 0.3 +
+        s16_df['team_tower_kills_z'] * 0.2
     )
     
-    # Standardize the raw comp score so mean=0, std=1
-    score_mean = s16_df['raw_champ_score'].mean()
-    score_std = s16_df['raw_champ_score'].std()
-    s16_df['champ_score_z'] = (s16_df['raw_champ_score'] - score_mean) / score_std
+    # Standardize the raw comp score strictly WITHIN the role so every role averages 50
+    s16_df['champ_score_z'] = s16_df.groupby('teamPosition')['raw_champ_score'].transform(lambda x: (x - x.mean()) / x.std())
     
     # Map to 0-100 scale: 50 is average, each std dev is 10 points
     s16_df['champ_score'] = 50.0 + (s16_df['champ_score_z'] * 10.0)
-    s16_df['champ_score'] = s16_df['champ_score'].clip(lower=0.0, upper=100.0).round(2)
+    s16_df['champ_score'] = s16_df['champ_score'].fillna(50.0).clip(lower=0.0, upper=100.0).round(2)
     
     # Now build the compositions format
     print("Formatting compositions data...")
-    comp_data = s16_df[['matchId', 'championId', 'championName', 'teamId', 'teamPosition', 'win', 'champ_score']].copy()
+    comp_data = s16_df[['matchId', 'championId', 'championName', 'teamId', 'teamPosition', 'win', 'champ_score', 'patch']].copy()
     comp_data = comp_data.rename(columns={
         'matchId': 'match_id',
         'championId': 'champion_id',

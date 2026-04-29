@@ -44,10 +44,21 @@ def main():
         print(f"  Warning: using fallback {comp_file.name}")
     comp_df = pd.read_csv(comp_file)
     print(f"  Loaded {len(comp_df)} rows, {comp_df['match_id'].nunique()} matches")
+    
+    # --- Step 1.5: Temporal Split (Phase 1) ---
+    print("\n[1.5/6] Splitting data chronologically by patch (Train: 16.1-16.6, Test: 16.7+)...")
+    comp_df['patch_minor'] = comp_df['patch'].apply(lambda x: int(str(x).split('.')[1]))
+    
+    train_df = comp_df[comp_df['patch_minor'] <= 6].copy()
+    test_df = comp_df[comp_df['patch_minor'] >= 7].copy()
+    
+    train_matches = train_df['match_id'].nunique()
+    test_matches = test_df['match_id'].nunique()
+    print(f"  Train matches: {train_matches} | Test matches: {test_matches}")
 
     # --- Step 2: Train Champion2Vec from scratch ---
-    print("\n[2/6] Training Champion2Vec embeddings from scratch...")
-    embed_dict, vocab = train_champion2vec(comp_df, embed_dim=64)
+    print("\n[2/6] Training Champion2Vec embeddings from scratch on training data...")
+    embed_dict, vocab = train_champion2vec(train_df, embed_dim=64)
     print(f"  Trained embeddings for {len(embed_dict)} champions")
 
     # Embedding quality check
@@ -59,25 +70,24 @@ def main():
             print(f"    {champ}: {sim_str}")
 
     # --- Step 3: Compute champion scores ---
-    print("\n[3/6] Computing champion average scores...")
-    champ_scores = compute_champion_scores(comp_df)
+    print("\n[3/6] Computing champion average scores on training data...")
+    champ_scores = compute_champion_scores(train_df)
     top_scores = sorted(champ_scores.items(), key=lambda x: x[1], reverse=True)[:5]
     print(f"  Top 5 avg scores: {[(n, f'{r:.1f}') for n, r in top_scores]}")
 
     # --- Step 4: Build training data ---
     print("\n[4/6] Building draft training data (simulating draft order)...")
-    X, y = build_training_data(comp_df, embed_dict, champ_scores)
-    print(f"  Samples: {len(y)} | Features: {X.shape[1]}")
-    print(f"  Target mean score in training data: {y.mean():.1f}")
+    X_train, y_train = build_training_data(train_df, embed_dict, champ_scores)
+    print(f"  Train Samples: {len(y_train)} | Features: {X_train.shape[1]}")
+    print(f"  Target mean score in training data: {y_train.mean():.1f}")
 
-    # Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-    print(f"  Train: {len(y_train)} | Test: {len(y_test)}")
+    # --- Step 4.5: Build testing data ---
+    print("\n[4.5/6] Building draft testing data...")
+    X_test, y_test = build_training_data(test_df, embed_dict, champ_scores)
+    print(f"  Test Samples: {len(y_test)} | Features: {X_test.shape[1]}")
 
-    # --- Step 5: Train LightGBM ---
-    print("\n[5/6] Training LightGBM draft classifier...")
+    # --- Step 5: Train HistGradientBoostingRegressor ---
+    print("\n[5/6] Training HistGradientBoostingRegressor draft classifier...")
     lgb_model = train_draft_model(X_train, y_train, X_val=X_test, y_val=y_test)
 
     # --- Step 6: Evaluate ---
