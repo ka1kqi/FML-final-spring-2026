@@ -40,16 +40,16 @@ def recommend_at_step(
         step: current step index (0-9)
         blue_picks: list of 5 slots, None for unfilled
         red_picks: list of 5 slots, None for unfilled
-        model: trained HistGradientBoostingRegressor
+        model: trained HistGradientBoostingClassifier
         embed_dict: champion name -> embedding vector
-        champ_scores: champion name -> average comp score
+        champ_scores: champion name -> historical avg comp score (feature)
         candidate_pool: list of valid champion names for this slot
                        (e.g. filtered by role). If None, uses all champions.
         banned: list of banned champion names to exclude
         top_k: number of recommendations to return
 
     Returns:
-        List of (champion_name, win_probability) sorted descending
+        List of (champion_name, win_prob in [0,1]) sorted descending.
     """
     if step < 0 or step >= len(DRAFT_ORDER):
         return []
@@ -81,9 +81,9 @@ def recommend_at_step(
         features = build_candidate_features(
             champ, allies, enemies, embed_dict, champ_scores
         )
-        score = model.predict(features.reshape(1, -1))[0]
+        win_prob = model.predict_proba(features.reshape(1, -1))[0, 1]
 
-        scored.append((champ, float(score)))
+        scored.append((champ, float(win_prob)))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_k]
@@ -183,24 +183,171 @@ def load_draft_resources(models_dir: Path):
     """
     Load all resources needed for draft recommendations.
 
-    Args:
-        models_dir: path to data/processed/draft_models/
-
     Returns:
-        (model, embed_dict, champ_scores) tuple
+        (model, embed_dict, champ_scores, biases) tuple
+        `biases` is a dict with keys
+            mu_syn, b_syn_u, b_syn_v, mu_match, b_match_u, b_match_v
+        each indexed by champion name. Empty dict if the artifact was
+        produced by an older training run that doesn't ship biases.
     """
     from src.models.draft_classifier import load_draft_model
 
     model = load_draft_model(models_dir / "draft_model.joblib")
 
-    # Load embeddings
     data = np.load(str(models_dir / "champion2vec.npz"), allow_pickle=True)
     embed_weights = data["weights"]
-    vocab = data["vocab"].tolist()  # list of champion names
+    vocab = data["vocab"].tolist()
     embed_dict = {name: embed_weights[i] for i, name in enumerate(vocab)}
 
-    # Load champ scores
+    biases: dict = {}
+    if "b_syn_u" in data.files:
+        biases = {
+            "mu_syn": float(data["mu_syn"]),
+            "mu_match": float(data["mu_match"]),
+            "b_syn_u": {n: float(data["b_syn_u"][i]) for i, n in enumerate(vocab)},
+            "b_syn_v": {n: float(data["b_syn_v"][i]) for i, n in enumerate(vocab)},
+            "b_match_u": {n: float(data["b_match_u"][i]) for i, n in enumerate(vocab)},
+            "b_match_v": {n: float(data["b_match_v"][i]) for i, n in enumerate(vocab)},
+        }
+
     with open(models_dir / "champ_scores.json", "r") as f:
         champ_scores = json.load(f)
 
-    return model, embed_dict, champ_scores
+    return model, embed_dict, champ_scores, biases
+
+
+# ============================================================================
+# Hybrid recommender — combines performance score with Wide & Deep win prob.
+# Existing `recommend_at_step` is preserved for backward compatibility.
+# ============================================================================
+
+
+def _legacy_win_prob(score: float) -> float:
+    """The original heuristic — kept here so it's importable for fallback."""
+    return max(0.0, min(1.0, 0.50 + (score - 50.0) * 0.01))
+
+
+def _legal_pool(candidate_pool, embed_dict, banned, blue_picks, red_picks):
+    """Filter candidates against bans, already-picked, and unknown champions.
+
+    Mirrors the embed_dict-membership check in ``recommend_at_step`` so a champion
+    present in the role pool but missing from the trained embeddings (e.g. a new
+    champion added to the CSV before retraining) doesn't crash
+    ``build_candidate_features``.
+    """
+    if candidate_pool is None:
+        candidate_pool = list(embed_dict.keys())
+    banned_set = set(banned or [])
+    picked = {p for p in (list(blue_picks) + list(red_picks)) if p}
+    return [
+        c for c in candidate_pool
+        if c not in banned_set and c not in picked and c in embed_dict
+    ]
+
+
+def recommend_hybrid(
+    step,
+    blue_picks,
+    red_picks,
+    model,
+    embed_dict,
+    champ_scores,
+    candidate_pool=None,
+    banned=None,
+    top_k: int = 5,
+    wide_deep_adapter=None,
+    alpha: float = 0.6,
+    rerank_top_n: int = 30,
+):
+    """Recommend top-k picks using performance score + W&D win prob.
+
+    Pipeline:
+      1. Score every legal candidate with the existing HGBR model.
+      2. Take the top ``rerank_top_n`` by performance score.
+      3. For each, ask the W&D adapter for the side-specific win prob if available.
+      4. final_rank_score = alpha * (perf_score / 100) + (1 - alpha) * win_prob.
+      5. If W&D unavailable: final_rank_score = perf_score / 100; win_prob falls back
+         to the legacy heuristic; prob_source = "score_heuristic_fallback".
+
+    Returns a list of dicts (length top_k or fewer):
+        champion, score, win_prob, performance_score,
+        wide_deep_blue_win_prob, wide_deep_side_win_prob,
+        final_rank_score, prob_source
+
+    Note: DRAFT_ORDER uses capitalized side strings ("Blue"/"Red"); side comparisons
+    use .lower() to be case-insensitive. slot is an integer index (0-4).
+    """
+    side_raw, slot = DRAFT_ORDER[step]
+    side = side_raw.lower()  # normalise to lowercase for comparisons
+
+    # Determine ally/enemy lists for the candidate's own perspective
+    if side == "blue":
+        my_picks, opp_picks = blue_picks, red_picks
+    else:
+        my_picks, opp_picks = red_picks, blue_picks
+    allies = [p for p in my_picks if p]
+    enemies = [p for p in opp_picks if p]
+
+    # 1. Build legal candidate pool
+    pool = _legal_pool(candidate_pool, embed_dict, banned, blue_picks, red_picks)
+    if not pool:
+        return []
+
+    # 2. Score them all. The trained model is a HistGradientBoostingClassifier
+    # whose predict_proba()[:, 1] is the win probability in [0, 1]. We multiply
+    # by 100 to keep the existing 0-100 "score" scale so downstream display and
+    # the legacy heuristic formula behave the same as before.
+    feats = np.stack([
+        build_candidate_features(c, allies, enemies, embed_dict, champ_scores)
+        for c in pool
+    ])
+    perf_scores = model.predict_proba(feats)[:, 1] * 100.0
+
+    # 3. Take top-N for rerank
+    order = np.argsort(perf_scores)[::-1][:rerank_top_n]
+    candidates = [(pool[i], float(perf_scores[i])) for i in order]
+
+    use_wd = wide_deep_adapter is not None and getattr(wide_deep_adapter, "available", False)
+
+    results = []
+    for name, perf in candidates:
+        norm_perf = max(0.0, min(1.0, perf / 100.0))
+        wd_blue = None
+        wd_side = None
+        if use_wd:
+            # Insert candidate into the empty draft slot for the current side
+            trial_blue = list(blue_picks)
+            trial_red = list(red_picks)
+            (trial_blue if side == "blue" else trial_red)[slot] = name
+            # Use predict_side_win_prob so both the real adapter and test stubs work
+            wd_blue = wide_deep_adapter.predict_side_win_prob(trial_blue, trial_red, "blue")
+            if wd_blue is not None:
+                wd_side = wd_blue if side == "blue" else 1.0 - wd_blue
+
+        if wd_side is not None:
+            final = alpha * norm_perf + (1 - alpha) * wd_side
+            win_prob = wd_side
+            source = "wide_deep"
+        else:
+            final = norm_perf
+            win_prob = _legacy_win_prob(perf)
+            source = "score_heuristic_fallback"
+
+        # Always-present score-heuristic prob (frontend uses for "Heuristic" toggle)
+        win_prob_heuristic = _legacy_win_prob(perf)
+
+        results.append({
+            "champion": name,
+            "score": round(perf, 1),
+            "win_prob": round(win_prob, 4),
+            "performance_score": round(perf, 2),
+            "wide_deep_blue_win_prob": None if wd_blue is None else round(wd_blue, 4),
+            "wide_deep_side_win_prob": None if wd_side is None else round(wd_side, 4),
+            "win_prob_wide_deep": None if wd_side is None else round(wd_side, 4),
+            "win_prob_heuristic": round(win_prob_heuristic, 4),
+            "final_rank_score": round(final, 4),
+            "prob_source": source,
+        })
+
+    results.sort(key=lambda r: r["final_rank_score"], reverse=True)
+    return results[:top_k]

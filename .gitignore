@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .env
 venv/
+.venv/
+artifacts/
 
 # Data files (large, git-ignored) but keep directory structure
 data/raw/*.json
@@ -11,4 +13,12 @@ data/processed/*.csv
 .DS_Store
 notebooks/.ipynb_checkpoints/
 *.csv
-*.csv
+
+# python tests
+.pytest_cache/
+
+# trained artifacts (large; produced by training scripts, not committed)
+data/processed/draft_models/wide_deep.pt
+data/processed/draft_models/wide_deep_vocab.json
+data/processed/draft_models/wide_deep_config.json
+data/processed/draft_models/wide_deep_metrics.json

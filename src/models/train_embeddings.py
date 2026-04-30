@@ -84,84 +84,237 @@ def build_performance_matrices(comp_df, vocab):
 
 class CustomMatrixFactorization:
     """
-    Pure-numpy Matrix Factorization using Stochastic Gradient Descent (SGD).
-    Learns embeddings U and V such that U * V^T approximates the target matrix.
+    Pure-numpy MF with per-row and per-column bias terms:
+
+        target[i, j] ~= mu + b_u[i] + b_v[j] + U[i] . V[j]
+
+    Bias terms absorb each champion's overall strength as a row/column,
+    so the latent vectors U and V are free to encode *relational*
+    chemistry beyond baseline. This produces cleaner directional
+    embeddings that survive L2 normalization without losing signal.
     """
-    def __init__(self, n_items, n_components=32, lr=0.01, reg=0.02, epochs=50):
+    def __init__(self, n_items, n_components=32, lr=0.01, reg=0.02,
+                 bias_reg=0.05, epochs=50):
         self.n_items = n_items
         self.n_components = n_components
         self.lr = lr
         self.reg = reg
+        self.bias_reg = bias_reg
         self.epochs = epochs
-        
+
         scale = 1.0 / np.sqrt(n_components)
         self.U = np.random.normal(0, scale, (n_items, n_components))
         self.V = np.random.normal(0, scale, (n_items, n_components))
-        
+        self.b_u = np.zeros(n_items)
+        self.b_v = np.zeros(n_items)
+        self.mu = 0.0
+
     def fit_transform(self, matrix, name=""):
         print(f"    Training Custom MF ({name}) for {self.epochs} epochs...")
         n_pairs = self.n_items * self.n_items
-        
+        self.mu = float(matrix.mean())
+
         for epoch in range(self.epochs):
             total_error = 0.0
-            
-            # Randomize order for SGD
+
             indices = np.random.permutation(n_pairs)
             for idx in indices:
                 i = idx // self.n_items
                 j = idx % self.n_items
-                
+
                 target = matrix[i, j]
-                pred = np.dot(self.U[i], self.V[j])
+                pred = self.mu + self.b_u[i] + self.b_v[j] + np.dot(self.U[i], self.V[j])
                 err = target - pred
                 total_error += err ** 2
-                
+
                 u_i = self.U[i].copy()
                 v_j = self.V[j].copy()
-                
-                # Gradient update with L2 regularization
+
+                self.b_u[i] += self.lr * (err - self.bias_reg * self.b_u[i])
+                self.b_v[j] += self.lr * (err - self.bias_reg * self.b_v[j])
                 self.U[i] += self.lr * (err * v_j - self.reg * u_i)
                 self.V[j] += self.lr * (err * u_i - self.reg * v_j)
-            
+
             if (epoch + 1) % 10 == 0:
                 rmse = np.sqrt(total_error / n_pairs)
                 print(f"      Epoch {epoch+1}/{self.epochs} | RMSE: {rmse:.4f}")
-        return self.U, self.V
+        return self.U, self.V, self.b_u, self.b_v, self.mu
+
+def _row_normalize(M, eps=1e-8):
+    """Scale each row to unit L2 norm. Rows with near-zero norm stay as-is."""
+    norms = np.linalg.norm(M, axis=1, keepdims=True)
+    norms = np.where(norms < eps, 1.0, norms)
+    return M / norms
+
+
+def build_champion_role_vocab(comp_df, min_games=20, min_role_share=0.10):
+    """
+    Build the (champion, role) vocabulary used by the role-aware embedding.
+    Keys are "Champion|ROLE" strings. Filters to (champ, role) pairs with
+    enough games to support a meaningful matchup estimate.
+    """
+    counts = (comp_df.groupby(["champion_name", "position"]).size()
+                     .reset_index(name="games"))
+    totals = (comp_df.groupby("champion_name").size()
+                     .reset_index(name="total"))
+    counts = counts.merge(totals, on="champion_name", how="left")
+    counts["role_share"] = counts["games"] / counts["total"]
+    counts = counts[(counts["games"] >= min_games)
+                    & (counts["role_share"] >= min_role_share)]
+    vocab = sorted(f"{c}|{r}" for c, r in zip(counts["champion_name"], counts["position"]))
+    return vocab
+
+
+def build_role_aware_matrices(comp_df, vocab):
+    """
+    Same logic as build_performance_matrices but the unit is (champion, role).
+
+    For each match, each player contributes their (champion, position) key.
+    Synergy: pairs on the same team in their respective lanes.
+    Matchup: pairs across teams (any lane against any lane — captures the
+    fact that Akali-MID's score is affected by every enemy, not only the
+    enemy mid laner). For "lane-vs-lane" queries downstream, callers can
+    intersect the matchup matrix to a single role pair.
+    """
+    n = len(vocab)
+    key_to_idx = {key: i for i, key in enumerate(vocab)}
+
+    syn_sum = np.full((n, n), 50.0 * 5)
+    syn_count = np.full((n, n), 5.0)
+    match_sum = np.full((n, n), 50.0 * 5)
+    match_count = np.full((n, n), 5.0)
+
+    for match_id, group in comp_df.groupby("match_id"):
+        blue = group[group["team_id"] == 100]
+        red = group[group["team_id"] == 200]
+        if len(blue) != 5 or len(red) != 5:
+            continue
+
+        blue_keys = [f"{r['champion_name']}|{r['position']}" for _, r in blue.iterrows()]
+        red_keys = [f"{r['champion_name']}|{r['position']}" for _, r in red.iterrows()]
+        blue_scores = blue["champ_score"].tolist()
+        red_scores = red["champ_score"].tolist()
+
+        if not all(k in key_to_idx for k in blue_keys + red_keys):
+            continue
+
+        for i in range(5):
+            for j in range(i + 1, 5):
+                bi, bj = key_to_idx[blue_keys[i]], key_to_idx[blue_keys[j]]
+                syn_sum[bi, bj] += blue_scores[i]
+                syn_sum[bj, bi] += blue_scores[j]
+                syn_count[bi, bj] += 1
+                syn_count[bj, bi] += 1
+                ri, rj = key_to_idx[red_keys[i]], key_to_idx[red_keys[j]]
+                syn_sum[ri, rj] += red_scores[i]
+                syn_sum[rj, ri] += red_scores[j]
+                syn_count[ri, rj] += 1
+                syn_count[rj, ri] += 1
+
+        for i, b in enumerate(blue_keys):
+            for j, r in enumerate(red_keys):
+                ib, ir = key_to_idx[b], key_to_idx[r]
+                match_sum[ib, ir] += blue_scores[i]
+                match_count[ib, ir] += 1
+                match_sum[ir, ib] += red_scores[j]
+                match_count[ir, ib] += 1
+
+    S = syn_sum / syn_count - 50.0
+    M = match_sum / match_count - 50.0
+    return S, M
+
+
+def train_champion_role_2vec(comp_df, embed_dim=64,
+                              min_games=20, min_role_share=0.10):
+    """
+    Role-aware embedding. Each (champion, role) is a separate unit.
+
+    Returns (embed_dict, vocab, biases) just like train_champion2vec, but
+    keys are "Champion|ROLE" strings. Use this for analysis queries like
+    "Akali-MID vs Ahri-MID" or "Akali-TOP vs Sylas-TOP" — each role gets
+    its own performance profile rather than averaging across roles.
+    """
+    vocab = build_champion_role_vocab(comp_df, min_games=min_games,
+                                       min_role_share=min_role_share)
+    print(f"  Role-aware vocab: {len(vocab)} (champion, role) units")
+
+    print("  Building role-aware performance matrices...")
+    S, M = build_role_aware_matrices(comp_df, vocab)
+
+    print("  Running role-aware MF (with bias terms)...")
+    quarter_dim = embed_dim // 4
+    n = len(vocab)
+
+    mf_syn = CustomMatrixFactorization(n, n_components=quarter_dim,
+                                        lr=0.01, reg=0.02, bias_reg=0.05, epochs=50)
+    u_syn, v_syn, b_syn_u, b_syn_v, mu_syn = mf_syn.fit_transform(S, name="Role-Synergy")
+
+    mf_match = CustomMatrixFactorization(n, n_components=quarter_dim,
+                                          lr=0.01, reg=0.02, bias_reg=0.05, epochs=50)
+    u_match, v_match, b_match_u, b_match_v, mu_match = mf_match.fit_transform(M, name="Role-Matchup")
+
+    embeddings = np.hstack([u_syn, v_syn, u_match, v_match])
+    embed_dict = {key: embeddings[i] for i, key in enumerate(vocab)}
+
+    biases = {
+        "mu_syn": float(mu_syn),
+        "b_syn_u": b_syn_u.astype(np.float32),
+        "b_syn_v": b_syn_v.astype(np.float32),
+        "mu_match": float(mu_match),
+        "b_match_u": b_match_u.astype(np.float32),
+        "b_match_v": b_match_v.astype(np.float32),
+    }
+    return embed_dict, vocab, biases
+
 
 def train_champion2vec(comp_df, embed_dim=64):
     """
-    Generate embeddings using Custom Matrix Factorization.
+    Train MF with bias terms. Returns raw (unnormalized) latent vectors —
+    the bias terms already separate global strength from relational
+    signal, so the U/V vectors carry meaningful magnitudes that
+    downstream features (booster, match LR) can exploit.
+
     Returns:
-        dict: champion_name -> numpy array (shape: embed_dim)
-        list: vocabulary (champion names)
+        embed_dict: dict[champion_name -> 64-d vector]
+            Layout: [U_syn(16) | V_syn(16) | U_match(16) | V_match(16)]
+            Cosine similarity over a block is comparable across pairs;
+            raw dot product gives absolute relational deviation.
+        vocab: list[str] champion names in row order.
+        biases: dict with absolute-score reconstruction terms:
+            'mu_syn', 'b_syn_u', 'b_syn_v',
+            'mu_match', 'b_match_u', 'b_match_v'
+        Full prediction:
+            S[i,j] ~= mu_syn + b_syn_u[i] + b_syn_v[j] + U_syn[i] . V_syn[j]
     """
-    # 1. Build vocabulary
     vocab = sorted(comp_df["champion_name"].unique().tolist())
-    
-    # 2. Build matrices
+
     print("  Building Performance Matrices...")
     S, M = build_performance_matrices(comp_df, vocab)
-    
-    # 3. Factorize matrices
-    print("  Running Custom Matrix Factorization...")
-    quarter_dim = embed_dim // 4  # 64 // 4 = 16 dimensions per component
+
+    print("  Running Custom Matrix Factorization with bias terms...")
+    quarter_dim = embed_dim // 4
     n_champs = len(vocab)
-    
-    mf_syn = CustomMatrixFactorization(n_champs, n_components=quarter_dim, lr=0.01, reg=0.02, epochs=50)
-    u_syn, v_syn = mf_syn.fit_transform(S, name="Synergy")
-    
-    mf_match = CustomMatrixFactorization(n_champs, n_components=quarter_dim, lr=0.01, reg=0.02, epochs=50)
-    u_match, v_match = mf_match.fit_transform(M, name="Matchup")
-    
-    # 4. Concatenate
-    # Each champion gets [16 U_syn | 16 V_syn | 16 U_match | 16 V_match] = 64 dimensions total
-    # PATH A: We remove L2 normalization to preserve raw magnitudes for direct score prediction.
+
+    mf_syn = CustomMatrixFactorization(n_champs, n_components=quarter_dim,
+                                        lr=0.01, reg=0.02, bias_reg=0.05, epochs=50)
+    u_syn, v_syn, b_syn_u, b_syn_v, mu_syn = mf_syn.fit_transform(S, name="Synergy")
+
+    mf_match = CustomMatrixFactorization(n_champs, n_components=quarter_dim,
+                                          lr=0.01, reg=0.02, bias_reg=0.05, epochs=50)
+    u_match, v_match, b_match_u, b_match_v, mu_match = mf_match.fit_transform(M, name="Matchup")
+
     embeddings = np.hstack([u_syn, v_syn, u_match, v_match])
-    
-    # 5. Build dictionary
     embed_dict = {champ: embeddings[i] for i, champ in enumerate(vocab)}
-    
-    return embed_dict, vocab
+
+    biases = {
+        "mu_syn": float(mu_syn),
+        "b_syn_u": b_syn_u.astype(np.float32),
+        "b_syn_v": b_syn_v.astype(np.float32),
+        "mu_match": float(mu_match),
+        "b_match_u": b_match_u.astype(np.float32),
+        "b_match_v": b_match_v.astype(np.float32),
+    }
+    return embed_dict, vocab, biases
 
 
 
