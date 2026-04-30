@@ -44,7 +44,7 @@ A `HistGradientBoostingRegressor` is trained on these features to accurately pre
 ```text
 FML-final-spring-2026/
 ├── app/                  # Flask Web Server & Live Frontend UI
-│   ├── server.py         # REST API endpoints (/api/recommend, /api/evaluate)
+│   ├── server.py         # REST API endpoints (+ /similar, /api/similar)
 │   └── static/           # Vanilla CSS/JS and HTML
 ├── data/                 
 │   ├── processed/        # Saved ML Models (.joblib, .npz, .json)
@@ -75,6 +75,9 @@ pip install -r requirements.txt
 python app/server.py
 ```
 Open `http://127.0.0.1:8080` in your browser to experience the real-time AI drafting engine!
+
+Additional pages:
+- **Champion Similarity (Pivot Pool)**: `http://127.0.0.1:8080/similar`
 
 **3. Retrain the Models from Scratch**
 *(Optional: If you pull new Riot API data)*

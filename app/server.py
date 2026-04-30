@@ -3,12 +3,15 @@ Flask API server for the LoL Draft Recommender.
 
 Endpoints:
     GET  /              — Serve the draft screen HTML
+    GET  /similar       — Champion embedding similarity (pivot pool) page
     GET  /api/champions — Return champion list with role data
+    GET  /api/similar   — Cosine-nearest champions in Champion2Vec space
     POST /api/recommend — Get top-5 recommendations for current draft step
 """
 
 import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -84,11 +87,75 @@ DDRAGON_KEY_MAP = {
 
 DDRAGON_VERSION = "16.8.1"
 
+def _cosine_neighbors(
+    anchor: str,
+    k: int,
+    role_filter: Optional[str] = None,
+) -> Optional[List[dict]]:
+    """Top-k cosine neighbors in full 64-D Champion2Vec space; optional role pool."""
+    if anchor not in embed_dict:
+        return None
+    q = embed_dict[anchor]
+    qn = float(np.linalg.norm(q))
+    if qn < 1e-12:
+        return []
+
+    pairs: List[Tuple[str, float]] = []
+    for name, vec in embed_dict.items():
+        if name == anchor:
+            continue
+        vn = float(np.linalg.norm(vec))
+        if vn < 1e-12:
+            continue
+        sim = float(np.dot(q, vec) / (qn * vn))
+        pairs.append((name, sim))
+
+    pairs.sort(key=lambda x: x[1], reverse=True)
+
+    allowed: Optional[set] = None
+    if role_filter and role_filter.lower() not in ("all", ""):
+        rf = role_filter.strip()
+        key = None
+        if rf in role_options:
+            key = rf
+        else:
+            for rk in role_options:
+                if rk.lower() == rf.lower():
+                    key = rk
+                    break
+        if key is not None:
+            allowed = set(role_options[key])
+
+    out: List[dict] = []
+    for name, sim in pairs:
+        if allowed is not None and name not in allowed:
+            continue
+        ddragon = DDRAGON_KEY_MAP.get(name, name)
+        img = (
+            f"https://ddragon.leagueoflegends.com/cdn/"
+            f"{DDRAGON_VERSION}/img/champion/{ddragon}.png"
+        )
+        out.append({
+            "name": name,
+            "similarity": sim,
+            "historical_wr": champ_win_rates.get(name),
+            "img": img,
+        })
+        if len(out) >= k:
+            break
+    return out
+
+
 # ---------- routes ----------
 
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
+
+
+@app.route("/similar")
+def similar_page():
+    return send_from_directory("static", "similar.html")
 
 
 @app.route("/api/champions")
@@ -108,6 +175,57 @@ def api_champions():
             "roles": champ_roles.get(name, []),
         })
     return jsonify(data)
+
+
+@app.route("/api/similar")
+def api_similar():
+    """Cosine-similar champions using the same Champion2Vec embeddings as draft."""
+    champion = (request.args.get("champion") or "").strip()
+    if not champion:
+        return jsonify({"error": "missing champion"}), 400
+
+    k_req = request.args.get("k", type=int)
+    k = int(k_req) if k_req is not None else 8
+    k = max(1, min(k, 24))
+
+    role = (request.args.get("role") or "all").strip()
+    role_arg: Optional[str] = None
+    if role.lower() not in ("all", ""):
+        role_arg = role
+
+    neighbors = _cosine_neighbors(champion, k, role_arg)
+    if neighbors is None:
+        return jsonify({"error": f"unknown champion {champion!r}"}), 400
+
+    return jsonify({
+        "anchor": champion,
+        "role_filter": role if role else "all",
+        "neighbors": neighbors,
+        "count": len(neighbors),
+    })
+
+
+@app.route("/api/similar_pair")
+def api_similar_pair():
+    """Direct cosine similarity between two champions in Champion2Vec space."""
+    a = (request.args.get("a") or "").strip()
+    b = (request.args.get("b") or "").strip()
+    if not a or not b:
+        return jsonify({"error": "missing a or b"}), 400
+    if a not in embed_dict:
+        return jsonify({"error": f"unknown champion {a!r}"}), 400
+    if b not in embed_dict:
+        return jsonify({"error": f"unknown champion {b!r}"}), 400
+
+    va = embed_dict[a]
+    vb = embed_dict[b]
+    na = float(np.linalg.norm(va))
+    nb = float(np.linalg.norm(vb))
+    if na < 1e-12 or nb < 1e-12:
+        return jsonify({"a": a, "b": b, "cosine": 0.0})
+
+    cos = float(np.dot(va, vb) / (na * nb))
+    return jsonify({"a": a, "b": b, "cosine": cos})
 
 
 @app.route("/api/recommend", methods=["POST"])
