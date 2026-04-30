@@ -2,6 +2,11 @@ name: Riot Crawler
 
 on:
   workflow_dispatch:
+    inputs:
+      start_phase:
+        description: "Force start at phase (seed/crawl/fetch/backfill). Leave empty to resume from checkpoint."
+        required: false
+        default: ""
 
 jobs:
   crawl:
@@ -30,6 +35,7 @@ jobs:
       - name: Run crawler
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
+          CRAWLER_START_PHASE: ${{ inputs.start_phase }}
         run: python -m src.collection.match_crawler
 
       - name: Save cached data
