@@ -218,12 +218,21 @@ def _legacy_win_prob(score: float) -> float:
 
 
 def _legal_pool(candidate_pool, embed_dict, banned, blue_picks, red_picks):
-    """Filter candidates against bans + already-picked. Falls back to all embedded champs."""
+    """Filter candidates against bans, already-picked, and unknown champions.
+
+    Mirrors the embed_dict-membership check in ``recommend_at_step`` so a champion
+    present in the role pool but missing from the trained embeddings (e.g. a new
+    champion added to the CSV before retraining) doesn't crash
+    ``build_candidate_features``.
+    """
     if candidate_pool is None:
         candidate_pool = list(embed_dict.keys())
     banned_set = set(banned or [])
     picked = {p for p in (list(blue_picks) + list(red_picks)) if p}
-    return [c for c in candidate_pool if c not in banned_set and c not in picked]
+    return [
+        c for c in candidate_pool
+        if c not in banned_set and c not in picked and c in embed_dict
+    ]
 
 
 def recommend_hybrid(
