@@ -408,9 +408,19 @@ def api_recommend():
     role_filter = body.get("role", None)
     top_k = int(body.get("top_k", 5))
 
-    # Toggle-driven ranking: "wide_deep" -> hybrid (alpha=0.6), "heuristic" -> pure perf_score
+    # Toggle-driven ranking. alpha is the *perf weight* in:
+    #   final_rank_score = alpha * (perf/100) + (1 - alpha) * wd_side
+    # Pure modes guarantee the displayed win_prob is monotonically descending:
+    #   - "wide_deep":  alpha=0   → rank purely by W&D win prob
+    #   - "heuristic":  alpha=1.0 → rank purely by per-pick perf score
+    #   - "match_classifier": falls through to W&D for per-pick recs (match_clf
+    #     needs full 5v5; it only kicks in at /api/evaluate). Use alpha=0 so the
+    #     order is at least monotonic in the W&D values shown.
     rank_source = (body.get("prob_source") or "wide_deep").lower()
-    alpha = 1.0 if rank_source == "heuristic" else 0.6
+    if rank_source == "heuristic":
+        alpha = 1.0
+    else:
+        alpha = 0.0  # wide_deep or match_classifier → rank by W&D win prob
 
     if step is None:
         step = get_current_step(blue_picks, red_picks)
