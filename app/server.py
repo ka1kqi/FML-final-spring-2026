@@ -308,6 +308,20 @@ def similar_page():
     return send_from_directory("static", "similar.html")
 
 
+@app.route("/api/status")
+def api_status():
+    """Lightweight bootstrap probe: which prob-source backends are available.
+
+    Frontend calls this once on page load so the win-prob toggle can render
+    enabled/disabled buttons before the first /api/recommend or /api/evaluate
+    response arrives.
+    """
+    return jsonify({
+        "wide_deep_available": wide_deep_adapter.available,
+        "match_classifier_available": match_model is not None,
+    })
+
+
 @app.route("/api/champions")
 def api_champions():
     """Return all champions with their roles and DDragon image key."""

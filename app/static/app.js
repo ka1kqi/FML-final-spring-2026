@@ -110,6 +110,17 @@ function pickEvaluateProbs(data) {
 
 // ---------- Init ----------
 document.addEventListener("DOMContentLoaded", async () => {
+  // Probe model availability up front so the toggle renders correctly during
+  // the ban phase (before any /api/recommend or /api/evaluate response).
+  try {
+    const status = await fetch("/api/status").then(r => r.json());
+    wideDeepAvailable = !!status.wide_deep_available;
+    matchClassifierAvailable = !!status.match_classifier_available;
+  } catch (e) {
+    console.warn("Status probe failed; assuming all backends available", e);
+    wideDeepAvailable = true;
+    matchClassifierAvailable = true;
+  }
   allChampions = await fetch("/api/champions").then(r => r.json());
   syncProbToggleUI();
   render();
@@ -167,11 +178,7 @@ async function fetchRecommendations() {
     recOffset = 0;
     recommendWarnings = (data && data.warnings && data.warnings.length) ? data.warnings : [];
     wideDeepAvailable = !!data.wide_deep_available;
-    // /api/recommend doesn't return match_classifier_available; rely on /api/evaluate
-    // for that flag. If we've never hit /evaluate, optimistically assume true.
-    if (matchClassifierAvailable === false && lastEvaluateData == null) {
-      matchClassifierAvailable = true;
-    }
+    // matchClassifierAvailable was set at boot by /api/status; no need to re-probe here.
     syncProbToggleUI();
   } catch (e) {
     console.error("Failed to fetch recommendations:", e);
