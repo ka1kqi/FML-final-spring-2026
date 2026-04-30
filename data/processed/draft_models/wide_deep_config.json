@@ -1,0 +1,14 @@
+{
+  "model_name": "wide_deep_draft_v2_pairwise",
+  "architecture": "v2_pairwise",
+  "embedding_dim": 32,
+  "hidden_dim": 128,
+  "hidden_dims": [
+    128,
+    64
+  ],
+  "dropout": 0.2,
+  "combine": "sum",
+  "target": "blue_win",
+  "output": "blue_win_prob"
+}

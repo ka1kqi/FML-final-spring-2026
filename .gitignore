@@ -1,24 +1,31 @@
+# Python
 __pycache__/
 *.pyc
 .env
 venv/
 .venv/
-artifacts/
-
-# Data files (large, git-ignored) but keep directory structure
-data/raw/*.json
-data/processed/*.csv
-*.pkl
-
-.DS_Store
-notebooks/.ipynb_checkpoints/
-*.csv
-
-# python tests
 .pytest_cache/
 
-# trained artifacts (large; produced by training scripts, not committed)
-data/processed/draft_models/wide_deep.pt
-data/processed/draft_models/wide_deep_vocab.json
-data/processed/draft_models/wide_deep_config.json
-data/processed/draft_models/wide_deep_metrics.json
+# OS
+.DS_Store
+
+# Notebooks
+notebooks/.ipynb_checkpoints/
+
+# Local-only outputs (never in git)
+artifacts/
+
+# Raw Riot match dumps (too large; keep directory structure via .gitkeep).
+# data/raw/compositions_s16.csv IS committed (small, needed for analytics + training).
+data/raw/*.json
+data/raw/matches.csv
+data/raw/matches.csv.gz
+data/raw/timelines/
+
+# Crawler checkpoints
+data/raw/.crawler_checkpoint.json
+
+# Note: wide_deep.* and *_calibrator.pkl ARE committed (~150 KB total) so a fresh
+# clone has all three prob-source backends working out of the box. Don't add
+# blanket *.pkl / *.csv ignores back — they previously masked artifacts that the
+# demo needs and silently broke the W&D toggle.

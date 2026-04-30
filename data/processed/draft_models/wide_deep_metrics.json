@@ -1,0 +1,195 @@
+{
+  "train": {
+    "n": 5468,
+    "auc": 0.6290133973131476,
+    "accuracy": 0.5912582297000731,
+    "brier": 0.24562261998653412,
+    "log_loss": 0.6843777538445128
+  },
+  "val": {
+    "n": 1171,
+    "auc": 0.5386614039902142,
+    "accuracy": 0.520068317677199,
+    "brier": 0.24905921518802643,
+    "log_loss": 0.6912644635985195
+  },
+  "test": {
+    "n": 1171,
+    "auc": 0.49661935220070685,
+    "accuracy": 0.4910333048676345,
+    "brier": 0.2505377531051636,
+    "log_loss": 0.694225346163395
+  },
+  "calibration": {
+    "calibrated_brier": 0.2545953094959259,
+    "calibrated_log_loss": 0.7126979022777606
+  },
+  "hidden_pick": {
+    "recall_at_1": 0.01953125,
+    "recall_at_3": 0.09375,
+    "recall_at_5": 0.125,
+    "mrr": 0.0863949691207119,
+    "n": 256
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_bce": 0.6941591246161221,
+      "train_ranking_loss": 3.461564662426863,
+      "val_auc": 0.5007123297269208,
+      "val_log_loss": 0.692865179313032,
+      "val_brier": 0.2498588263988495,
+      "improved": true
+    },
+    {
+      "epoch": 2,
+      "train_bce": 0.6925762961533442,
+      "train_ranking_loss": 3.4503916663328225,
+      "val_auc": 0.5233609117820505,
+      "val_log_loss": 0.6941528770362965,
+      "val_brier": 0.25050249695777893,
+      "improved": true
+    },
+    {
+      "epoch": 3,
+      "train_bce": 0.6913713912677835,
+      "train_ranking_loss": 3.442418742371722,
+      "val_auc": 0.5312607652289673,
+      "val_log_loss": 0.6926916365305649,
+      "val_brier": 0.24977220594882965,
+      "improved": true
+    },
+    {
+      "epoch": 4,
+      "train_bce": 0.6896037032068778,
+      "train_ranking_loss": 3.4326740739636814,
+      "val_auc": 0.532536536092346,
+      "val_log_loss": 0.6922299597313525,
+      "val_brier": 0.24954143166542053,
+      "improved": true
+    },
+    {
+      "epoch": 5,
+      "train_bce": 0.6889207865429692,
+      "train_ranking_loss": 3.4257182448818986,
+      "val_auc": 0.533511610390672,
+      "val_log_loss": 0.6916497334983236,
+      "val_brier": 0.24925199151039124,
+      "improved": true
+    },
+    {
+      "epoch": 6,
+      "train_bce": 0.6882609306414282,
+      "train_ranking_loss": 3.4165270230852083,
+      "val_auc": 0.5378658718156818,
+      "val_log_loss": 0.6912769970967686,
+      "val_brier": 0.24906596541404724,
+      "improved": true
+    },
+    {
+      "epoch": 7,
+      "train_bce": 0.6871983828384159,
+      "train_ranking_loss": 3.4087512072805253,
+      "val_auc": 0.5386614039902142,
+      "val_log_loss": 0.6912644635985195,
+      "val_brier": 0.24905921518802643,
+      "improved": true
+    },
+    {
+      "epoch": 8,
+      "train_bce": 0.6857515819419799,
+      "train_ranking_loss": 3.400156954560911,
+      "val_auc": 0.5364309945173966,
+      "val_log_loss": 0.6920475858233905,
+      "val_brier": 0.24944855272769928,
+      "improved": false
+    },
+    {
+      "epoch": 9,
+      "train_bce": 0.6852887285479509,
+      "train_ranking_loss": 3.3929822108304317,
+      "val_auc": 0.536404720060256,
+      "val_log_loss": 0.6912865169491273,
+      "val_brier": 0.2490696758031845,
+      "improved": false
+    },
+    {
+      "epoch": 10,
+      "train_bce": 0.684538053175613,
+      "train_ranking_loss": 3.3843360576824977,
+      "val_auc": 0.5343494736350419,
+      "val_log_loss": 0.6913327501017583,
+      "val_brier": 0.24909313023090363,
+      "improved": false
+    },
+    {
+      "epoch": 11,
+      "train_bce": 0.6830851167505818,
+      "train_ranking_loss": 3.3776408740003876,
+      "val_auc": 0.5345625886762928,
+      "val_log_loss": 0.6944575966029874,
+      "val_brier": 0.25063708424568176,
+      "improved": false
+    },
+    {
+      "epoch": 12,
+      "train_bce": 0.6830704967820391,
+      "train_ranking_loss": 3.3689290612129374,
+      "val_auc": 0.5373184872919209,
+      "val_log_loss": 0.692431234460697,
+      "val_brier": 0.2496470808982849,
+      "improved": false
+    }
+  ],
+  "config": {
+    "model_name": "wide_deep_draft_v2_pairwise",
+    "architecture": "v2_pairwise",
+    "embedding_dim": 32,
+    "hidden_dim": 128,
+    "hidden_dims": [
+      128,
+      64
+    ],
+    "dropout": 0.2,
+    "combine": "sum",
+    "target": "blue_win",
+    "output": "blue_win_prob"
+  },
+  "training_config": {
+    "model_name": "wide_deep_draft_v2_pairwise",
+    "architecture": "v2_pairwise",
+    "embedding_dim": 32,
+    "hidden_dim": 128,
+    "hidden_dims": [
+      128,
+      64
+    ],
+    "dropout": 0.2,
+    "combine": "sum",
+    "target": "blue_win",
+    "output": "blue_win_prob",
+    "batch_size": 256,
+    "epochs": 25,
+    "patience": 5,
+    "learning_rate": 0.001,
+    "weight_decay": 1e-05,
+    "partial_slot_dropout_p": 0.1,
+    "unk_dropout_p": 0.05,
+    "side_flip_p": 0.5,
+    "ranking_weight": 0.1,
+    "ranking_negatives": 31,
+    "pretrain_embeddings": true,
+    "enable_calibration": true,
+    "val_size": 0.15,
+    "test_size": 0.15,
+    "seed": 42
+  },
+  "split_method": "time_patch",
+  "dataset_sizes": {
+    "train": 5468,
+    "val": 1171,
+    "test": 1171
+  },
+  "vocab_size": 174,
+  "notes": "Wide & Deep v2 pairwise predicts blue-side win probability from draft composition; calibrator (if present) is isotonic-regression."
+}
