@@ -153,13 +153,10 @@ def train_champion2vec(comp_df, embed_dim=64):
     mf_match = CustomMatrixFactorization(n_champs, n_components=quarter_dim, lr=0.01, reg=0.02, epochs=50)
     u_match, v_match = mf_match.fit_transform(M, name="Matchup")
     
-    # 4. Concatenate and normalize
+    # 4. Concatenate
     # Each champion gets [16 U_syn | 16 V_syn | 16 U_match | 16 V_match] = 64 dimensions total
+    # PATH A: We remove L2 normalization to preserve raw magnitudes for direct score prediction.
     embeddings = np.hstack([u_syn, v_syn, u_match, v_match])
-    
-    # L2 Normalize
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    embeddings = embeddings / np.clip(norms, 1e-9, None)
     
     # 5. Build dictionary
     embed_dict = {champ: embeddings[i] for i, champ in enumerate(vocab)}
@@ -170,17 +167,90 @@ def train_champion2vec(comp_df, embed_dim=64):
 
 
 def most_similar(query_champ, embed_dict, top_k=5):
-    """Find most similar champions by cosine similarity."""
+    """
+    Find champions with the most similar full-embedding profile by
+    true cosine similarity. This measures archetype overlap (how a
+    champion reacts to allies/enemies and how it affects them) — it
+    does NOT measure synergy with the query. Use `top_synergies` for
+    that.
+    """
     if query_champ not in embed_dict:
         return []
 
     q_vec = embed_dict[query_champ]
+    q_norm = np.linalg.norm(q_vec)
+    if q_norm < 1e-8:
+        return []
+
     sims = []
     for c, vec in embed_dict.items():
         if c == query_champ:
             continue
-        sim = np.dot(q_vec, vec)
-        sims.append((c, float(sim)))
+        denom = q_norm * np.linalg.norm(vec)
+        if denom < 1e-8:
+            continue
+        sim = float(np.dot(q_vec, vec) / denom)
+        sims.append((c, sim))
 
     sims.sort(key=lambda x: x[1], reverse=True)
     return sims[:top_k]
+
+
+def top_synergies(query_champ, embed_dict, top_k=5, embed_dim=64,
+                  primary_role=None):
+    """
+    Allies that the MF predicts boost `query_champ`'s score the most:
+        score(ally) = U_syn[query] · V_syn[ally]
+
+    If `primary_role` (champion -> role string) is provided, champions
+    sharing the query's role are excluded — same-role pairs never
+    actually appear as allies in real matches, and the MF's prediction
+    for them reflects role-archetype similarity rather than synergy.
+    """
+    if query_champ not in embed_dict:
+        return []
+    q = embed_dim // 4
+    u_syn_q = embed_dict[query_champ][0:q]
+    q_role = primary_role.get(query_champ) if primary_role else None
+    scored = []
+    for c, vec in embed_dict.items():
+        if c == query_champ:
+            continue
+        if q_role is not None and primary_role.get(c) == q_role:
+            continue
+        v_syn_c = vec[q:2*q]
+        scored.append((c, float(np.dot(u_syn_q, v_syn_c))))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
+def top_counters(query_champ, embed_dict, top_k=5, embed_dim=64):
+    """
+    Enemies the query is predicted to do best against:
+        score(enemy) = U_match[query] · V_match[enemy]
+
+    Cross-role here is fine — you face all 5 enemy roles, so no filter.
+    """
+    if query_champ not in embed_dict:
+        return []
+    q = embed_dim // 4
+    u_m_q = embed_dict[query_champ][2*q:3*q]
+    scored = []
+    for c, vec in embed_dict.items():
+        if c == query_champ:
+            continue
+        v_m_c = vec[3*q:4*q]
+        scored.append((c, float(np.dot(u_m_q, v_m_c))))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
+def compute_primary_roles(comp_df):
+    """
+    Map champion_name -> most-frequent position in the training data.
+    Used to filter same-role pairs from synergy diagnostics.
+    """
+    counts = (comp_df.groupby(["champion_name", "position"])
+                     .size().reset_index(name="n"))
+    counts = counts.sort_values("n", ascending=False).drop_duplicates("champion_name")
+    return counts.set_index("champion_name")["position"].to_dict()

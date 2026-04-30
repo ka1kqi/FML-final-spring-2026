@@ -1,76 +1,75 @@
 """
 Synergy and counter features computed from Champion2Vec embeddings.
 
-These features capture how well a candidate champion fits with the
-current draft state:
-  - ally_synergy: cosine similarity to teammates (high = good fit)
-  - enemy_counter: cosine similarity to enemies (high = similar playstyle)
-  - Embedding aggregations for team and enemy compositions
+The 64-d champion embedding is the concatenation of four 16-d blocks
+produced by matrix factorization:
 
-All cosine similarity computations are hand-written (no scipy).
+    [ U_syn (16) | V_syn (16) | U_match (16) | V_match (16) ]
+
+with the trained property
+
+    S[i, j] (centered ally score) ≈ U_syn[i] · V_syn[j]
+    M[i, j] (centered matchup score) ≈ U_match[i] · V_match[j]
+
+So predicted synergy of candidate c with ally a is the *cross-block*
+dot product U_syn[c] · V_syn[a]. Cosine similarity of the full
+embeddings does NOT recover this — it mixes same-block terms that
+encode archetype similarity, not synergy.
 """
 
 import numpy as np
 import pandas as pd
 
 
-def cosine_similarity(vec_a, vec_b):
+def _split_blocks(vec, embed_dim=64):
+    """Slice a flat embedding into (U_syn, V_syn, U_match, V_match)."""
+    q = embed_dim // 4
+    return vec[0:q], vec[q:2*q], vec[2*q:3*q], vec[3*q:4*q]
+
+
+def predicted_synergy(candidate_vec, ally_vec, embed_dim=64):
     """
-    Hand-written cosine similarity between two vectors.
+    Asymmetric MF-predicted synergy: candidate's centered score boost
+    when `ally_vec`'s champion is on the same team.
 
-    cos(a, b) = (a · b) / (||a|| * ||b||)
-
-    Returns a float in [-1, 1].
+        synergy(c, a) = U_syn[c] · V_syn[a]
     """
-    dot = np.dot(vec_a, vec_b)
-    norm_a = np.linalg.norm(vec_a)
-    norm_b = np.linalg.norm(vec_b)
-    if norm_a < 1e-8 or norm_b < 1e-8:
-        return 0.0
-    return float(dot / (norm_a * norm_b))
+    u_syn_c, _, _, _ = _split_blocks(candidate_vec, embed_dim)
+    _, v_syn_a, _, _ = _split_blocks(ally_vec, embed_dim)
+    return float(np.dot(u_syn_c, v_syn_a))
 
 
-def ally_synergy_score(candidate_vec, ally_vecs):
+def predicted_counter(candidate_vec, enemy_vec, embed_dim=64):
     """
-    Mean cosine similarity between a candidate champion and current allies.
+    Asymmetric MF-predicted matchup: candidate's centered score
+    when facing `enemy_vec`'s champion. Positive = candidate counters.
 
-    Higher score = candidate fits well with the existing team composition.
-    Returns 0.0 if there are no allies yet.
+        counter(c, e) = U_match[c] · V_match[e]
+    """
+    _, _, u_match_c, _ = _split_blocks(candidate_vec, embed_dim)
+    _, _, _, v_match_e = _split_blocks(enemy_vec, embed_dim)
+    return float(np.dot(u_match_c, v_match_e))
 
-    Args:
-        candidate_vec: np.ndarray of shape (embed_dim,)
-        ally_vecs: list of np.ndarray, one per current ally
 
-    Returns:
-        float — average cosine similarity to allies
+def ally_synergy_score(candidate_vec, ally_vecs, embed_dim=64):
+    """
+    Mean MF-predicted synergy across current allies. Returns 0.0 when
+    no allies are picked yet (matches the centered-matrix prior).
     """
     if not ally_vecs:
         return 0.0
-    sims = [cosine_similarity(candidate_vec, av) for av in ally_vecs]
+    sims = [predicted_synergy(candidate_vec, av, embed_dim) for av in ally_vecs]
     return float(np.mean(sims))
 
 
-def enemy_counter_score(candidate_vec, enemy_vecs):
+def enemy_counter_score(candidate_vec, enemy_vecs, embed_dim=64):
     """
-    Mean cosine similarity between a candidate champion and current enemies.
-
-    In our embedding space, similar champions have similar playstyles.
-    A high similarity to enemies could mean the candidate is easily
-    countered (same weaknesses). We return raw similarity; the model
-    decides how to weight it.
-
-    Returns 0.0 if there are no enemies yet.
-
-    Args:
-        candidate_vec: np.ndarray of shape (embed_dim,)
-        enemy_vecs: list of np.ndarray, one per current enemy
-
-    Returns:
-        float — average cosine similarity to enemies
+    Mean MF-predicted matchup score across current enemies.
+    Positive = candidate is favored vs. the enemy team on average.
     """
     if not enemy_vecs:
         return 0.0
-    sims = [cosine_similarity(candidate_vec, ev) for ev in enemy_vecs]
+    sims = [predicted_counter(candidate_vec, ev, embed_dim) for ev in enemy_vecs]
     return float(np.mean(sims))
 
 
@@ -96,55 +95,42 @@ def build_candidate_features(candidate_name, ally_names, enemy_names,
     """
     Build a feature vector for a candidate champion given the current draft state.
 
-    Feature layout (196 dimensions total):
+    Feature layout (197 dimensions total):
       [0:64]    candidate's own embedding vector
       [64:128]  mean embedding of current allies (zeros if none)
       [128:192] mean embedding of current enemies (zeros if none)
-      [192]     ally synergy score (avg cosine sim to allies)
-      [193]     enemy counter score (avg cosine sim to enemies)
+      [192]     ally synergy score = mean(U_syn[c] · V_syn[a]) over allies
+      [193]     enemy counter score = mean(U_match[c] · V_match[e]) over enemies
       [194]     candidate's historical comp score (0-100)
       [195]     number of allies already picked (0-4)
       [196]     number of enemies already picked (0-4)
 
-    Args:
-        candidate_name: name of the candidate champion
-        ally_names: list of champion names already on the same team
-        enemy_names: list of champion names on the opposing team
-        embed_dict: dict mapping champion names to embedding vectors
-        champ_scores: dict mapping champion names to average comp scores
-        embed_dim: dimensionality of embeddings (default 64)
-
-    Returns:
-        np.ndarray of shape (197,) — the feature vector
+    The synergy/counter scalars are the MF model's own predictions of
+    centered score contribution — not cosine similarity, which would
+    measure archetype overlap rather than interaction quality.
     """
     candidate_vec = embed_dict[candidate_name]
 
-    # Ally embeddings
     ally_vecs = [embed_dict[n] for n in ally_names if n in embed_dict]
     if ally_vecs:
         ally_mean = np.mean(ally_vecs, axis=0)
     else:
         ally_mean = np.zeros(embed_dim, dtype=np.float32)
 
-    # Enemy embeddings
     enemy_vecs = [embed_dict[n] for n in enemy_names if n in embed_dict]
     if enemy_vecs:
         enemy_mean = np.mean(enemy_vecs, axis=0)
     else:
         enemy_mean = np.zeros(embed_dim, dtype=np.float32)
 
-    # Synergy and counter scores
-    synergy = ally_synergy_score(candidate_vec, ally_vecs)
-    counter = enemy_counter_score(candidate_vec, enemy_vecs)
+    synergy = ally_synergy_score(candidate_vec, ally_vecs, embed_dim)
+    counter = enemy_counter_score(candidate_vec, enemy_vecs, embed_dim)
 
-    # Average Comp Score
     wr = champ_scores.get(candidate_name, 50.0)
 
-    # Draft state
     num_allies = float(len(ally_names))
     num_enemies = float(len(enemy_names))
 
-    # Concatenate all features
     features = np.concatenate([
         candidate_vec,          # 64
         ally_mean,              # 64
