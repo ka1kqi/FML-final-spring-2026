@@ -23,6 +23,8 @@ from src.inference.draft_recommender import (
     get_current_step,
     DRAFT_ORDER,
 )
+from src.inference.wide_deep_adapter import WideDeepDraftAdapter
+from src.inference.draft_recommender import recommend_hybrid
 from src.features.synergy_features import build_candidate_features
 import numpy as np
 import pandas as pd
@@ -39,6 +41,9 @@ role_options = load_role_champion_options(
 )
 draft_model, embed_dict, champ_scores = load_draft_resources(DRAFT_MODELS_DIR)
 
+wide_deep_adapter = WideDeepDraftAdapter(model_dir=DRAFT_MODELS_DIR)
+print(f"Wide & Deep adapter available: {wide_deep_adapter.available}")
+
 # Build a champion -> list-of-roles mapping for the frontend
 champ_roles: dict[str, list[str]] = {}
 for role, champs in role_options.items():
@@ -47,26 +52,22 @@ for role, champs in role_options.items():
 
 # Load full composition data to calculate exact stats
 print("Calculating exact stats for Analysis Page...")
-comp_df = pd.read_csv(PROJECT_ROOT / "data/raw/compositions_s16.csv", usecols=["champion_name", "position", "win"])
-
+comp_csv = PROJECT_ROOT / "data/raw/compositions_s16.csv"
 champ_role_stats: dict[str, dict[str, float]] = {}
 champ_win_rates: dict[str, float] = {}
 lane_pools: dict[str, list[str]] = {r: [] for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]}
-
-for champ, group in comp_df.groupby("champion_name"):
-    # Role Dist
-    role_counts = group["position"].value_counts(normalize=True)
-    champ_role_stats[champ] = {role: round(pct * 100, 1) for role, pct in role_counts.items()}
-    
-    # Win Rate
-    champ_win_rates[champ] = round(group["win"].mean() * 100, 2)
-    
-    # Lane Pool (10% threshold)
-    for role, pct in role_counts.items():
-        if pct >= 0.10:
-            lane_pools[role].append(champ)
-
-print("Stats and Lane Pools calculated.")
+if comp_csv.exists():
+    comp_df = pd.read_csv(comp_csv, usecols=["champion_name", "position", "win"])
+    for champ, group in comp_df.groupby("champion_name"):
+        role_counts = group["position"].value_counts(normalize=True)
+        champ_role_stats[champ] = {role: round(pct * 100, 1) for role, pct in role_counts.items()}
+        champ_win_rates[champ] = round(group["win"].mean() * 100, 2)
+        for role, pct in role_counts.items():
+            if pct >= 0.10:
+                lane_pools[role].append(champ)
+    print("Stats and Lane Pools calculated.")
+else:
+    print(f"Warning: {comp_csv.name} not found; analysis stats will be empty.")
 
 # DDragon name overrides (dataset name -> DDragon key)
 DDRAGON_KEY_MAP = {
@@ -112,7 +113,7 @@ def api_champions():
 
 @app.route("/api/recommend", methods=["POST"])
 def api_recommend():
-    """Return top-5 recommendations for the current draft step."""
+    """Top-K recommendations with hybrid (perf + W&D) ranking."""
     body = request.get_json(force=True)
     blue_picks = body.get("blue_picks", [None] * 5)
     red_picks = body.get("red_picks", [None] * 5)
@@ -120,24 +121,28 @@ def api_recommend():
     red_bans = body.get("red_bans", [])
     step = body.get("step", None)
     role_filter = body.get("role", None)
+    top_k = int(body.get("top_k", 5))
 
-    # Auto-detect step if not provided
     if step is None:
         step = get_current_step(blue_picks, red_picks)
 
     if step >= len(DRAFT_ORDER):
-        return jsonify({"side": None, "slot": None, "recommendations": []})
+        return jsonify({
+            "side": None, "slot": None, "recommendations": [],
+            "prob_source": "wide_deep" if wide_deep_adapter.available else "score_heuristic_fallback",
+            "model_version": wide_deep_adapter.model_version,
+            "warnings": [],
+        })
 
     side, slot = DRAFT_ORDER[step]
 
-    # Build candidate pool from role filter or all champions
     candidate_pool = None
     if role_filter and role_filter in role_options:
         candidate_pool = role_options[role_filter]
 
     banned = [b for b in (blue_bans + red_bans) if b]
 
-    recs = recommend_at_step(
+    recs = recommend_hybrid(
         step=step,
         blue_picks=blue_picks,
         red_picks=red_picks,
@@ -146,72 +151,79 @@ def api_recommend():
         champ_scores=champ_scores,
         candidate_pool=candidate_pool,
         banned=banned,
-        top_k=50,
+        top_k=top_k,
+        wide_deep_adapter=wide_deep_adapter,
+        alpha=0.6,
+        rerank_top_n=30,
     )
 
-    recommendations = []
-    for name, score in recs:
-        # Direct 1:1 map: score 52.5 -> 0.525 win prob
-        win_prob = 0.50 + (score - 50.0) * 0.01
-        win_prob = max(0.0, min(1.0, win_prob))
-        
-        recommendations.append({
-            "champion": name,
-            "score": round(score, 1),
-            "win_prob": round(win_prob, 4)
-        })
-
-    # Re-sort recommendations by amplified score just to be safe
-    recommendations.sort(key=lambda x: x["score"], reverse=True)
+    warnings = []
+    if not wide_deep_adapter.available:
+        warnings.append("Wide & Deep artifact missing — using score-derived heuristic for win_prob.")
 
     return jsonify({
         "step": step,
         "side": side,
         "slot": slot,
-        "recommendations": recommendations,
+        "recommendations": recs,
+        "prob_source": "wide_deep" if wide_deep_adapter.available else "score_heuristic_fallback",
+        "model_version": wide_deep_adapter.model_version,
+        "warnings": warnings,
     })
 
 
 @app.route("/api/evaluate", methods=["POST"])
 def api_evaluate():
-    """Return the final win probability for the completed draft."""
+    """Final composition win probability — uses W&D when available."""
     body = request.get_json(force=True)
     blue_picks = body.get("blue_picks", [])
     red_picks = body.get("red_picks", [])
 
-    if len(blue_picks) != 5 or len(red_picks) != 5 or any(p is None for p in blue_picks + red_picks):
+    warnings = []
+
+    if (
+        len(blue_picks) != 5
+        or len(red_picks) != 5
+        or any(p is None for p in blue_picks + red_picks)
+    ):
         return jsonify({
             "blue_score": 50.0,
             "blue_win_prob": 0.5,
             "red_score": 50.0,
-            "red_win_prob": 0.5
+            "red_win_prob": 0.5,
+            "prob_source": "score_heuristic_fallback",
+            "model_version": wide_deep_adapter.model_version,
+            "warnings": ["Incomplete draft — returning neutral win prob."],
         })
 
-    # Evaluate the composition by taking the average predicted score
-    # of the model evaluating each of the 5 Blue champions in context.
+    # Always compute the legacy avg-score figures (used for the "score" display fields)
     blue_scores = []
     for i, candidate in enumerate(blue_picks):
         allies = [p for j, p in enumerate(blue_picks) if j != i]
         enemies = red_picks
-        features = build_candidate_features(
-            candidate, allies, enemies, embed_dict, champ_scores
-        )
-        score = draft_model.predict(features.reshape(1, -1))[0]
-        blue_scores.append(float(score))
-
+        feats = build_candidate_features(candidate, allies, enemies, embed_dict, champ_scores)
+        blue_scores.append(float(draft_model.predict(feats.reshape(1, -1))[0]))
     avg_blue_score = sum(blue_scores) / len(blue_scores)
-    
-    # Since the score centers around 50 for an average match, red's score is roughly mirrored
     avg_red_score = 100.0 - avg_blue_score
 
-    blue_win_prob = max(0.0, min(1.0, 0.50 + (avg_blue_score - 50.0) * 0.01))
-    red_win_prob = 1.0 - blue_win_prob
+    if wide_deep_adapter.available:
+        blue_win_prob = wide_deep_adapter.predict_blue_win_prob(blue_picks, red_picks)
+        red_win_prob = 1.0 - blue_win_prob
+        source = "wide_deep"
+    else:
+        blue_win_prob = max(0.0, min(1.0, 0.50 + (avg_blue_score - 50.0) * 0.01))
+        red_win_prob = 1.0 - blue_win_prob
+        source = "score_heuristic_fallback"
+        warnings.append("Wide & Deep artifact missing — using score-derived heuristic for win_prob.")
 
     return jsonify({
         "blue_score": round(avg_blue_score, 1),
-        "blue_win_prob": blue_win_prob,
+        "blue_win_prob": round(blue_win_prob, 4),
         "red_score": round(avg_red_score, 1),
-        "red_win_prob": red_win_prob
+        "red_win_prob": round(red_win_prob, 4),
+        "prob_source": source,
+        "model_version": wide_deep_adapter.model_version,
+        "warnings": warnings,
     })
 
 
