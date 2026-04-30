@@ -26,7 +26,13 @@ UNK_ID: int = 1
 
 
 class WideDeepDraftNet(nn.Module):
-    """Wide & Deep architecture for predicting blue-side win probability."""
+    """Wide & Deep architecture for predicting blue-side win probability.
+
+    The model is intentionally asymmetric — blue and red embeddings are treated
+    differently via separate slot columns in the wide branch. This reflects the
+    real blue-side advantage in League of Legends; do not "fix" by adding
+    symmetry constraints.
+    """
 
     def __init__(
         self,
@@ -46,7 +52,7 @@ class WideDeepDraftNet(nn.Module):
         # Implemented as 10 slot-specific weight vectors over the full champion vocab.
         # Total params: 10 * num_champions (1 logit per (slot, champion)).
         self.wide_weights = nn.Embedding(num_champions, 10, padding_idx=PAD_ID)
-        nn.init.zeros_(self.wide_weights.weight)
+        nn.init.zeros_(self.wide_weights.weight)  # neutral wide start; let training build up biases
 
         # Deep branch: blue mean + red mean + per-slot blue + per-slot red embeddings
         deep_in = embedding_dim * 2 + embedding_dim * 10
@@ -85,7 +91,9 @@ class WideDeepDraftNet(nn.Module):
 
         # Wide: each champion contributes a learned scalar per (side, slot).
         # Slots 0-4 are blue TOP..UTILITY; slots 5-9 are red TOP..UTILITY.
-        # Mask out PAD ids so they contribute zero (padding_idx=0 already returns zeros).
+        # PAD id (0) contributes zero: its weight row is initialized to zero (via
+        # nn.init.zeros_ for wide_weights, and via padding_idx for self.embedding)
+        # and its gradient is masked by padding_idx, so it stays zero through training.
         wide_b = self.wide_weights(blue_ids)  # [B, 5, 10]
         wide_r = self.wide_weights(red_ids)
         # Pick the slot-specific column for each position.

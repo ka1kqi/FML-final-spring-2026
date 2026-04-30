@@ -6,6 +6,8 @@ from src.models.wide_deep import (
     ROLE_ORDER,
     PAD_TOKEN,
     UNK_TOKEN,
+    PAD_ID,
+    UNK_ID,
 )
 
 
@@ -16,6 +18,11 @@ def test_role_order_is_canonical():
 def test_special_tokens():
     assert PAD_TOKEN == "__PAD__"
     assert UNK_TOKEN == "__UNK__"
+
+
+def test_special_token_ids():
+    assert PAD_ID == 0
+    assert UNK_ID == 1
 
 
 def test_forward_shape_full_draft():
