@@ -36,10 +36,11 @@ let swapState = null; // { side, slot } if swapping
 let recOffset = 0;
 let recommendWarnings = []; // non-breaking: backend warning strings (e.g. W&D fallback)
 
-// Win-prob source: "wide_deep" or "heuristic" — user-selectable via top-right toggle.
+// Win-prob source: "wide_deep" | "match_classifier" | "heuristic"
 // Persisted in localStorage so the choice survives reloads.
-let probSource = localStorage.getItem("probSource") || "wide_deep";
-let wideDeepAvailable = false; // updated from each /api/recommend or /api/evaluate response
+let probSource = localStorage.getItem("probSource") || "match_classifier";
+let wideDeepAvailable = false;
+let matchClassifierAvailable = false;
 let lastEvaluateData = null;   // cached so toggle re-renders without re-fetching
 
 function setProbSource(src) {
@@ -58,31 +59,53 @@ function setProbSource(src) {
 
 function syncProbToggleUI() {
   const wdBtn = document.getElementById("prob-toggle-wd");
+  const mcBtn = document.getElementById("prob-toggle-mc");
   const heurBtn = document.getElementById("prob-toggle-heur");
-  if (!wdBtn || !heurBtn) return;
-  // Disable W&D when adapter unavailable; force "heuristic"
-  if (!wideDeepAvailable) {
-    wdBtn.disabled = true;
-    wdBtn.title = "Wide & Deep model not loaded — only heuristic available";
-    if (probSource === "wide_deep") {
-      probSource = "heuristic";
-      localStorage.setItem("probSource", probSource);
-    }
-  } else {
-    wdBtn.disabled = false;
-    wdBtn.title = "Use the Wide & Deep neural network's win probability";
-  }
+  if (!wdBtn || !mcBtn || !heurBtn) return;
+
+  // Disable buttons whose underlying model is unavailable
+  wdBtn.disabled = !wideDeepAvailable;
+  wdBtn.title = wideDeepAvailable
+    ? "Wide & Deep neural network (high variance, currently overfit)"
+    : "Wide & Deep model not loaded";
+  mcBtn.disabled = !matchClassifierAvailable;
+  mcBtn.title = matchClassifierAvailable
+    ? "Match-level Logistic Regression with temperature calibration (best calibrated)"
+    : "Match classifier not loaded";
+  heurBtn.title = "Per-pick classifier averaged over 5 picks (simplest)";
+
+  // If current selection is unavailable, fall back gracefully
+  if (probSource === "wide_deep" && !wideDeepAvailable) probSource = "match_classifier";
+  if (probSource === "match_classifier" && !matchClassifierAvailable) probSource = "heuristic";
+  localStorage.setItem("probSource", probSource);
+
   wdBtn.classList.toggle("active", probSource === "wide_deep");
+  mcBtn.classList.toggle("active", probSource === "match_classifier");
   heurBtn.classList.toggle("active", probSource === "heuristic");
 }
 
 // Pick the displayed win prob from a rec dict according to the toggle.
+// match_classifier isn't available per-pick (needs full 5v5), so it falls
+// through to the heuristic for the recommend cards.
 function pickWinProb(rec) {
   if (probSource === "wide_deep" && rec.win_prob_wide_deep != null) {
     return rec.win_prob_wide_deep;
   }
   if (rec.win_prob_heuristic != null) return rec.win_prob_heuristic;
   return rec.win_prob; // legacy fallback
+}
+
+function pickEvaluateProbs(data) {
+  if (probSource === "wide_deep" && data.blue_win_prob_wide_deep != null) {
+    return [data.blue_win_prob_wide_deep, data.red_win_prob_wide_deep];
+  }
+  if (probSource === "match_classifier" && data.blue_win_prob_match_classifier != null) {
+    return [data.blue_win_prob_match_classifier, data.red_win_prob_match_classifier];
+  }
+  if (data.blue_win_prob_heuristic != null) {
+    return [data.blue_win_prob_heuristic, data.red_win_prob_heuristic];
+  }
+  return [data.blue_win_prob, data.red_win_prob]; // legacy fallback
 }
 
 // ---------- Init ----------
@@ -144,6 +167,11 @@ async function fetchRecommendations() {
     recOffset = 0;
     recommendWarnings = (data && data.warnings && data.warnings.length) ? data.warnings : [];
     wideDeepAvailable = !!data.wide_deep_available;
+    // /api/recommend doesn't return match_classifier_available; rely on /api/evaluate
+    // for that flag. If we've never hit /evaluate, optimistically assume true.
+    if (matchClassifierAvailable === false && lastEvaluateData == null) {
+      matchClassifierAvailable = true;
+    }
     syncProbToggleUI();
   } catch (e) {
     console.error("Failed to fetch recommendations:", e);
@@ -618,29 +646,20 @@ function renderCompleteOverlay() {
     body: JSON.stringify({
       blue_picks: bluePicks,
       red_picks: redPicks,
+      prob_source: probSource,
     }),
   })
   .then(res => res.json())
   .then(data => {
     lastEvaluateData = data;
     wideDeepAvailable = !!data.wide_deep_available;
+    matchClassifierAvailable = !!data.match_classifier_available;
     syncProbToggleUI();
     renderEvaluatePanel(data);
   })
   .catch(err => console.error("Evaluate error:", err));
 
   renderEvaluateTeams();
-}
-
-// Pull blue/red probs from /api/evaluate response according to the toggle.
-function pickEvaluateProbs(data) {
-  if (probSource === "wide_deep" && data.blue_win_prob_wide_deep != null) {
-    return [data.blue_win_prob_wide_deep, data.red_win_prob_wide_deep];
-  }
-  if (data.blue_win_prob_heuristic != null) {
-    return [data.blue_win_prob_heuristic, data.red_win_prob_heuristic];
-  }
-  return [data.blue_win_prob, data.red_win_prob]; // legacy fallback
 }
 
 function renderEvaluatePanel(data) {
