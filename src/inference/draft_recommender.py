@@ -259,28 +259,51 @@ def recommend_hybrid(
     alpha: float = 0.6,
     rerank_top_n: int = 30,
 ):
-    """Recommend top-k picks using performance score + W&D win prob.
+    """Recommend top-k picks; ranking strategy depends on alpha and W&D availability.
 
-    Pipeline:
-      1. Score every legal candidate with the existing HGBR model.
-      2. Take the top ``rerank_top_n`` by performance score.
-      3. For each, ask the W&D adapter for the side-specific win prob if available.
-      4. final_rank_score = alpha * (perf_score / 100) + (1 - alpha) * win_prob.
-      5. If W&D unavailable: final_rank_score = perf_score / 100; win_prob falls back
-         to the legacy heuristic; prob_source = "score_heuristic_fallback".
+    Three modes:
+      * **W&D-only** (alpha ≤ 1e-9 and wide_deep_adapter.available):
+        - Enumerate ALL legal candidates (no HGBR pre-filter).
+        - Score each with W&D side win probability.
+        - Sort by side win prob descending.
+        - score / performance_score / win_prob / final_rank_score all reflect
+          W&D's side win prob × 100 (or in [0,1] for win_prob/final_rank_score).
+        This is the path used by the "wide_deep" toggle in the UI.
 
-    Returns a list of dicts (length top_k or fewer):
-        champion, score, win_prob, performance_score,
-        wide_deep_blue_win_prob, wide_deep_side_win_prob,
-        final_rank_score, prob_source
+      * **Hybrid** (0 < alpha < 1 and W&D available):
+        - HGBR scores every legal candidate, top-rerank_top_n by perf score
+          go to W&D for win-prob lookup.
+        - final_rank_score = alpha * (perf/100) + (1-alpha) * wd_side.
+
+      * **Heuristic / fallback** (alpha ≥ 1 or W&D unavailable):
+        - HGBR's predict_proba is the score, win_prob comes from the legacy
+          formula 0.5 + (perf-50)*0.01.
 
     Note: DRAFT_ORDER uses capitalized side strings ("Blue"/"Red"); side comparisons
     use .lower() to be case-insensitive. slot is an integer index (0-4).
     """
     side_raw, slot = DRAFT_ORDER[step]
-    side = side_raw.lower()  # normalise to lowercase for comparisons
+    side = side_raw.lower()
 
-    # Determine ally/enemy lists for the candidate's own perspective
+    pool = _legal_pool(candidate_pool, embed_dict, banned, blue_picks, red_picks)
+    if not pool:
+        return []
+
+    use_wd = wide_deep_adapter is not None and getattr(wide_deep_adapter, "available", False)
+
+    # ---- W&D-only path ---------------------------------------------------
+    if use_wd and alpha <= 1e-9:
+        return _wide_deep_only_recommend(
+            pool=pool,
+            blue_picks=blue_picks,
+            red_picks=red_picks,
+            side=side,
+            slot=slot,
+            wide_deep_adapter=wide_deep_adapter,
+            top_k=top_k,
+        )
+
+    # ---- Hybrid / heuristic path: keep historical HGBR-based scoring ----
     if side == "blue":
         my_picks, opp_picks = blue_picks, red_picks
     else:
@@ -288,26 +311,14 @@ def recommend_hybrid(
     allies = [p for p in my_picks if p]
     enemies = [p for p in opp_picks if p]
 
-    # 1. Build legal candidate pool
-    pool = _legal_pool(candidate_pool, embed_dict, banned, blue_picks, red_picks)
-    if not pool:
-        return []
-
-    # 2. Score them all. The trained model is a HistGradientBoostingClassifier
-    # whose predict_proba()[:, 1] is the win probability in [0, 1]. We multiply
-    # by 100 to keep the existing 0-100 "score" scale so downstream display and
-    # the legacy heuristic formula behave the same as before.
     feats = np.stack([
         build_candidate_features(c, allies, enemies, embed_dict, champ_scores)
         for c in pool
     ])
     perf_scores = model.predict_proba(feats)[:, 1] * 100.0
 
-    # 3. Take top-N for rerank
     order = np.argsort(perf_scores)[::-1][:rerank_top_n]
     candidates = [(pool[i], float(perf_scores[i])) for i in order]
-
-    use_wd = wide_deep_adapter is not None and getattr(wide_deep_adapter, "available", False)
 
     results = []
     for name, perf in candidates:
@@ -315,11 +326,9 @@ def recommend_hybrid(
         wd_blue = None
         wd_side = None
         if use_wd:
-            # Insert candidate into the empty draft slot for the current side
             trial_blue = list(blue_picks)
             trial_red = list(red_picks)
             (trial_blue if side == "blue" else trial_red)[slot] = name
-            # Use predict_side_win_prob so both the real adapter and test stubs work
             wd_blue = wide_deep_adapter.predict_side_win_prob(trial_blue, trial_red, "blue")
             if wd_blue is not None:
                 wd_side = wd_blue if side == "blue" else 1.0 - wd_blue
@@ -333,9 +342,7 @@ def recommend_hybrid(
             win_prob = _legacy_win_prob(perf)
             source = "score_heuristic_fallback"
 
-        # Always-present score-heuristic prob (frontend uses for "Heuristic" toggle)
         win_prob_heuristic = _legacy_win_prob(perf)
-
         results.append({
             "champion": name,
             "score": round(perf, 1),
@@ -347,6 +354,65 @@ def recommend_hybrid(
             "win_prob_heuristic": round(win_prob_heuristic, 4),
             "final_rank_score": round(final, 4),
             "prob_source": source,
+        })
+
+    results.sort(key=lambda r: r["final_rank_score"], reverse=True)
+    return results[:top_k]
+
+
+def _wide_deep_only_recommend(
+    pool,
+    blue_picks,
+    red_picks,
+    side: str,
+    slot: int,
+    wide_deep_adapter,
+    top_k: int,
+):
+    """Enumerate every legal candidate and rank purely by W&D side win prob.
+
+    Uses the adapter's batch helper when available so 150+ candidates are
+    scored in a single forward pass. Falls back to per-candidate calls if the
+    adapter is a stub without ``predict_blue_win_prob_batch`` (e.g. tests).
+    """
+    blue_lists, red_lists, names = [], [], []
+    for name in pool:
+        trial_blue = list(blue_picks)
+        trial_red = list(red_picks)
+        (trial_blue if side == "blue" else trial_red)[slot] = name
+        blue_lists.append(trial_blue)
+        red_lists.append(trial_red)
+        names.append(name)
+
+    batch_fn = getattr(wide_deep_adapter, "predict_blue_win_prob_batch", None)
+    if callable(batch_fn):
+        wd_blues = batch_fn(blue_lists, red_lists)
+    else:
+        wd_blues = [
+            wide_deep_adapter.predict_side_win_prob(b, r, "blue")
+            for b, r in zip(blue_lists, red_lists)
+        ]
+
+    results = []
+    for name, wd_blue in zip(names, wd_blues):
+        if wd_blue is None:
+            continue
+        wd_side = wd_blue if side == "blue" else 1.0 - wd_blue
+        # Heuristic stays available for diagnostics; perf maps from the same
+        # win prob so the legacy 0–100 display remains consistent.
+        perf_pct = wd_side * 100.0
+        win_prob_heuristic = _legacy_win_prob(perf_pct)
+        results.append({
+            "champion": name,
+            "score": round(perf_pct, 1),
+            "performance_score": round(perf_pct, 2),
+            "win_prob": round(wd_side, 4),
+            "wide_deep_blue_win_prob": round(wd_blue, 4),
+            "wide_deep_side_win_prob": round(wd_side, 4),
+            "win_prob_wide_deep": round(wd_side, 4),
+            "win_prob_heuristic": round(win_prob_heuristic, 4),
+            "final_rank_score": round(wd_side, 4),
+            "prob_source": "wide_deep",
         })
 
     results.sort(key=lambda r: r["final_rank_score"], reverse=True)

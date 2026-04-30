@@ -139,3 +139,98 @@ def test_banned_excluded():
     names = [r["champion"] for r in out]
     assert "Yasuo" not in names
     assert "Jinx" not in names
+
+
+# ---------- W&D-only path (alpha=0, adapter available) ----------
+
+class _WDPerCandidateStub:
+    """Adapter stub that returns a different W&D prob for every candidate name.
+
+    Used to confirm that recommend_hybrid sorts by side win prob in the W&D-only
+    path, and that the HGBR ``predict_proba`` is never invoked.
+    """
+
+    def __init__(self, name_to_prob):
+        self.available = True
+        self.model_version = "stub_wd"
+        self._name_to_prob = name_to_prob
+        self.batch_calls = 0
+        self.single_calls = 0
+
+    def predict_blue_win_prob_batch(self, blue_picks_list, red_picks_list):
+        self.batch_calls += 1
+        out = []
+        for blue, red in zip(blue_picks_list, red_picks_list):
+            inserted = next((c for c in blue + red if c and c in self._name_to_prob), None)
+            out.append(self._name_to_prob.get(inserted, 0.5))
+        return out
+
+    def predict_side_win_prob(self, blue, red, side):
+        self.single_calls += 1
+        inserted = next((c for c in blue + red if c and c in self._name_to_prob), None)
+        p = self._name_to_prob.get(inserted, 0.5)
+        return p if side == "blue" else 1.0 - p
+
+
+def test_wide_deep_only_path_bypasses_hgbr():
+    champs, embed_dict, champ_scores = _stub_resources()
+    # Predict_proba must never be called in this path.
+    failing_model = MagicMock()
+    failing_model.predict_proba = MagicMock(side_effect=AssertionError(
+        "HGBR predict_proba must NOT be called when alpha<=eps and adapter is available"
+    ))
+
+    name_to_prob = {c: 0.40 + 0.05 * i for i, c in enumerate(champs)}  # ascending
+    adapter = _WDPerCandidateStub(name_to_prob)
+
+    out = recommend_hybrid(
+        step=0,
+        blue_picks=[None] * 5,
+        red_picks=[None] * 5,
+        model=failing_model,
+        embed_dict=embed_dict,
+        champ_scores=champ_scores,
+        candidate_pool=champs,
+        banned=[],
+        top_k=3,
+        wide_deep_adapter=adapter,
+        alpha=0.0,                # → W&D-only path
+        rerank_top_n=999,         # irrelevant when alpha=0
+    )
+
+    failing_model.predict_proba.assert_not_called()
+    assert adapter.batch_calls == 1   # batched once, not per-candidate
+    assert len(out) == 3
+    # Results sorted by side win prob descending (side is blue at step 0).
+    probs = [r["win_prob"] for r in out]
+    assert probs == sorted(probs, reverse=True)
+    # All 8 fields present + prob_source = wide_deep
+    for r in out:
+        for field in ("champion", "score", "performance_score", "win_prob",
+                      "wide_deep_blue_win_prob", "wide_deep_side_win_prob",
+                      "win_prob_wide_deep", "win_prob_heuristic",
+                      "final_rank_score", "prob_source"):
+            assert field in r, f"missing {field}"
+        assert r["prob_source"] == "wide_deep"
+
+
+def test_wide_deep_only_path_falls_back_when_adapter_unavailable():
+    """alpha=0 but adapter unavailable → must NOT crash; goes to legacy fallback."""
+    champs, embed_dict, champ_scores = _stub_resources()
+    model = _stub_model(lambda row: 55.0)
+    out = recommend_hybrid(
+        step=0,
+        blue_picks=[None] * 5,
+        red_picks=[None] * 5,
+        model=model,
+        embed_dict=embed_dict,
+        champ_scores=champ_scores,
+        candidate_pool=champs,
+        banned=[],
+        top_k=3,
+        wide_deep_adapter=_StubAdapter(available=False),
+        alpha=0.0,
+    )
+    assert len(out) == 3
+    for r in out:
+        assert r["prob_source"] == "score_heuristic_fallback"
