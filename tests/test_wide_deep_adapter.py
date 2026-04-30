@@ -99,3 +99,14 @@ def test_side_conversion(tmp_path: Path):
     p_red = adapter.predict_side_win_prob(blue, red, side="red")
     assert p_blue is not None and p_red is not None
     assert abs((p_blue + p_red) - 1.0) < 1e-5
+
+
+def test_empty_vocab_does_not_raise(tmp_path: Path):
+    """Malformed artifact with empty champion_to_id must NOT crash __init__."""
+    (tmp_path / "wide_deep_vocab.json").write_text(
+        json.dumps({"champion_to_id": {}, "id_to_champion": {}, "pad_token": "__PAD__", "unk_token": "__UNK__", "role_order": ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]})
+    )
+    (tmp_path / "wide_deep_config.json").write_text(json.dumps({"model_name": "x", "embedding_dim": 8, "hidden_dims": [16, 8], "dropout": 0.0}))
+    # Don't even need wide_deep.pt — _load fails before that on the empty max() call
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    assert adapter.available is False

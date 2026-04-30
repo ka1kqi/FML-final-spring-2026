@@ -42,7 +42,7 @@ class WideDeepDraftAdapter:
         try:
             self._load()
             self._available = True
-        except (FileNotFoundError, json.JSONDecodeError, KeyError, RuntimeError) as exc:
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, RuntimeError, ValueError) as exc:
             logger.warning("Wide & Deep artifacts unavailable (%s); using fallback.", exc)
             self._available = False
 
@@ -73,8 +73,8 @@ class WideDeepDraftAdapter:
 
     def predict_side_win_prob(
         self,
-        blue_picks,
-        red_picks,
+        blue_picks: Mapping[str, str | None] | Sequence[str | None],
+        red_picks: Mapping[str, str | None] | Sequence[str | None],
         side: str,
     ) -> float | None:
         p = self.predict_blue_win_prob(blue_picks, red_picks)
