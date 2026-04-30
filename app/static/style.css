@@ -840,6 +840,51 @@ body {
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
   padding-top: 4px;
+  position: relative;
+}
+
+/* Win-prob source toggle — pinned to top-right of nav bar */
+.prob-toggle {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+.prob-toggle-label {
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.prob-toggle-btn {
+  padding: 5px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.prob-toggle-btn:hover:not(:disabled) {
+  color: var(--text-secondary);
+  background: var(--bg-card-hover);
+}
+.prob-toggle-btn.active {
+  color: var(--gold-glow);
+  background: rgba(200, 155, 60, 0.15);
+  border-color: var(--gold);
+}
+.prob-toggle-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .nav-tab {

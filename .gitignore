@@ -17,3 +17,6 @@ notebooks/.ipynb_checkpoints/
 
 # trained artifacts (large; produced by training scripts, not committed)
 data/processed/draft_models/wide_deep.pt
+data/processed/draft_models/wide_deep_vocab.json
+data/processed/draft_models/wide_deep_config.json
+data/processed/draft_models/wide_deep_metrics.json

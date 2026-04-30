@@ -320,6 +320,9 @@ def recommend_hybrid(
             win_prob = _legacy_win_prob(perf)
             source = "score_heuristic_fallback"
 
+        # Always-present score-heuristic prob (frontend uses for "Heuristic" toggle)
+        win_prob_heuristic = _legacy_win_prob(perf)
+
         results.append({
             "champion": name,
             "score": round(perf, 1),
@@ -327,6 +330,8 @@ def recommend_hybrid(
             "performance_score": round(perf, 2),
             "wide_deep_blue_win_prob": None if wd_blue is None else round(wd_blue, 4),
             "wide_deep_side_win_prob": None if wd_side is None else round(wd_side, 4),
+            "win_prob_wide_deep": None if wd_side is None else round(wd_side, 4),
+            "win_prob_heuristic": round(win_prob_heuristic, 4),
             "final_rank_score": round(final, 4),
             "prob_source": source,
         })

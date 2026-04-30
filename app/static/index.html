@@ -12,6 +12,15 @@
   <div class="nav-tabs">
     <div class="nav-tab active" id="tab-draft" onclick="switchTab('draft')">DRAFT SIMULATOR</div>
     <div class="nav-tab" id="tab-analysis" onclick="switchTab('analysis')">CHAMPION ANALYSIS</div>
+
+    <!-- Win-prob source toggle (top-right) -->
+    <div class="prob-toggle" id="prob-toggle" title="Choose which model produces the displayed win probability">
+      <span class="prob-toggle-label">Win Prob:</span>
+      <button type="button" class="prob-toggle-btn active" id="prob-toggle-wd"
+              onclick="setProbSource('wide_deep')">W&amp;D</button>
+      <button type="button" class="prob-toggle-btn" id="prob-toggle-heur"
+              onclick="setProbSource('heuristic')">Heuristic</button>
+    </div>
   </div>
 
   <div class="view-container active" id="view-draft">

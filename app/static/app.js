@@ -36,9 +36,59 @@ let swapState = null; // { side, slot } if swapping
 let recOffset = 0;
 let recommendWarnings = []; // non-breaking: backend warning strings (e.g. W&D fallback)
 
+// Win-prob source: "wide_deep" or "heuristic" — user-selectable via top-right toggle.
+// Persisted in localStorage so the choice survives reloads.
+let probSource = localStorage.getItem("probSource") || "wide_deep";
+let wideDeepAvailable = false; // updated from each /api/recommend or /api/evaluate response
+let lastEvaluateData = null;   // cached so toggle re-renders without re-fetching
+
+function setProbSource(src) {
+  probSource = src;
+  localStorage.setItem("probSource", src);
+  syncProbToggleUI();
+  // Re-fetch recommendations so the top-K reflects the chosen ranking source
+  fetchRecommendations().then(() => renderRecommendations());
+  // Re-fetch evaluate too if we have a completed draft
+  if (lastEvaluateData && phase === "complete") {
+    renderCompleteOverlay();
+  } else if (lastEvaluateData) {
+    renderEvaluatePanel(lastEvaluateData);
+  }
+}
+
+function syncProbToggleUI() {
+  const wdBtn = document.getElementById("prob-toggle-wd");
+  const heurBtn = document.getElementById("prob-toggle-heur");
+  if (!wdBtn || !heurBtn) return;
+  // Disable W&D when adapter unavailable; force "heuristic"
+  if (!wideDeepAvailable) {
+    wdBtn.disabled = true;
+    wdBtn.title = "Wide & Deep model not loaded — only heuristic available";
+    if (probSource === "wide_deep") {
+      probSource = "heuristic";
+      localStorage.setItem("probSource", probSource);
+    }
+  } else {
+    wdBtn.disabled = false;
+    wdBtn.title = "Use the Wide & Deep neural network's win probability";
+  }
+  wdBtn.classList.toggle("active", probSource === "wide_deep");
+  heurBtn.classList.toggle("active", probSource === "heuristic");
+}
+
+// Pick the displayed win prob from a rec dict according to the toggle.
+function pickWinProb(rec) {
+  if (probSource === "wide_deep" && rec.win_prob_wide_deep != null) {
+    return rec.win_prob_wide_deep;
+  }
+  if (rec.win_prob_heuristic != null) return rec.win_prob_heuristic;
+  return rec.win_prob; // legacy fallback
+}
+
 // ---------- Init ----------
 document.addEventListener("DOMContentLoaded", async () => {
   allChampions = await fetch("/api/champions").then(r => r.json());
+  syncProbToggleUI();
   render();
 });
 
@@ -86,12 +136,15 @@ async function fetchRecommendations() {
         red_bans: redBans.filter(b => b && b !== "__skip__"),
         step: currentPickStep,
         role: role,
+        prob_source: probSource, // toggle drives backend ranking strategy
       }),
     });
     const data = await resp.json();
     recommendations = data.recommendations || [];
     recOffset = 0;
     recommendWarnings = (data && data.warnings && data.warnings.length) ? data.warnings : [];
+    wideDeepAvailable = !!data.wide_deep_available;
+    syncProbToggleUI();
   } catch (e) {
     console.error("Failed to fetch recommendations:", e);
     recommendations = [];
@@ -497,12 +550,13 @@ function renderRecommendations() {
     info.appendChild(name);
 
     const prob = document.createElement("div");
-    const pct = (rec.win_prob * 100).toFixed(1);
+    const wp = pickWinProb(rec);
+    const pct = (wp * 100).toFixed(1);
     const score = rec.score.toFixed(1);
     prob.innerHTML = `<span style="font-size: 10px; color: var(--text-dim);">S: ${score}</span> &nbsp;${pct}%`;
     prob.className = "rec-card-prob";
-    if (rec.win_prob >= 0.52) prob.classList.add("high");
-    else if (rec.win_prob >= 0.48) prob.classList.add("mid");
+    if (wp >= 0.52) prob.classList.add("high");
+    else if (wp >= 0.48) prob.classList.add("mid");
     else prob.classList.add("low");
     info.appendChild(prob);
 
@@ -567,24 +621,47 @@ function renderCompleteOverlay() {
   })
   .then(res => res.json())
   .then(data => {
-    const blueBar = document.getElementById("win-bar-blue");
-    const redBar = document.getElementById("win-bar-red");
-    const bluePct = (data.blue_win_prob * 100).toFixed(1);
-    const redPct = (data.red_win_prob * 100).toFixed(1);
-    const blueScore = data.blue_score.toFixed(1);
-    const redScore = data.red_score.toFixed(1);
-    
-    blueBar.style.width = `${bluePct}%`;
-    blueBar.innerHTML = `<span style="opacity: 0.8; margin-right: 6px;">[S: ${blueScore}]</span> ${bluePct}%`;
-    
-    redBar.style.width = `${redPct}%`;
-    redBar.innerHTML = `${redPct}% <span style="opacity: 0.8; margin-left: 6px;">[S: ${redScore}]</span>`;
+    lastEvaluateData = data;
+    wideDeepAvailable = !!data.wide_deep_available;
+    syncProbToggleUI();
+    renderEvaluatePanel(data);
   })
   .catch(err => console.error("Evaluate error:", err));
 
-  // Display teams
+  renderEvaluateTeams();
+}
+
+// Pull blue/red probs from /api/evaluate response according to the toggle.
+function pickEvaluateProbs(data) {
+  if (probSource === "wide_deep" && data.blue_win_prob_wide_deep != null) {
+    return [data.blue_win_prob_wide_deep, data.red_win_prob_wide_deep];
+  }
+  if (data.blue_win_prob_heuristic != null) {
+    return [data.blue_win_prob_heuristic, data.red_win_prob_heuristic];
+  }
+  return [data.blue_win_prob, data.red_win_prob]; // legacy fallback
+}
+
+function renderEvaluatePanel(data) {
+  const blueBar = document.getElementById("win-bar-blue");
+  const redBar = document.getElementById("win-bar-red");
+  if (!blueBar || !redBar) return;
+  const [bp, rp] = pickEvaluateProbs(data);
+  const bluePct = (bp * 100).toFixed(1);
+  const redPct = (rp * 100).toFixed(1);
+  const blueScore = data.blue_score.toFixed(1);
+  const redScore = data.red_score.toFixed(1);
+
+  blueBar.style.width = `${bluePct}%`;
+  blueBar.innerHTML = `<span style="opacity: 0.8; margin-right: 6px;">[S: ${blueScore}]</span> ${bluePct}%`;
+  redBar.style.width = `${redPct}%`;
+  redBar.innerHTML = `${redPct}% <span style="opacity: 0.8; margin-left: 6px;">[S: ${redScore}]</span>`;
+}
+
+function renderEvaluateTeams() {
   const blueTeam = document.getElementById("result-blue-team");
   const redTeam = document.getElementById("result-red-team");
+  if (!blueTeam || !redTeam) return;
   blueTeam.innerHTML = bluePicks.map(p => `
     <div style="text-align:center">
       <img src="${getChampImg(p)}" style="width:48px;height:48px;border-radius:50%;border:2px solid var(--blue-team)">

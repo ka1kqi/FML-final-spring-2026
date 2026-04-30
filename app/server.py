@@ -139,6 +139,10 @@ def api_recommend():
     role_filter = body.get("role", None)
     top_k = int(body.get("top_k", 5))
 
+    # Toggle-driven ranking: "wide_deep" -> hybrid (alpha=0.6), "heuristic" -> pure perf_score
+    rank_source = (body.get("prob_source") or "wide_deep").lower()
+    alpha = 1.0 if rank_source == "heuristic" else 0.6
+
     if step is None:
         step = get_current_step(blue_picks, red_picks)
 
@@ -147,6 +151,7 @@ def api_recommend():
         return jsonify({
             "step": step,
             "side": None, "slot": None, "recommendations": [],
+            "wide_deep_available": wide_deep_adapter.available,
             "prob_source": prob_source,
             "model_version": model_version,
             "warnings": warnings,
@@ -160,6 +165,10 @@ def api_recommend():
 
     banned = [b for b in (blue_bans + red_bans) if b]
 
+    # When user picks "heuristic" mode we skip the W&D adapter entirely so
+    # final_rank_score == norm_perf and the top-K is the true top-K by perf score.
+    adapter_for_call = wide_deep_adapter if rank_source != "heuristic" else None
+
     recs = recommend_hybrid(
         step=step,
         blue_picks=blue_picks,
@@ -170,8 +179,8 @@ def api_recommend():
         candidate_pool=candidate_pool,
         banned=banned,
         top_k=top_k,
-        wide_deep_adapter=wide_deep_adapter,
-        alpha=0.6,
+        wide_deep_adapter=adapter_for_call,
+        alpha=alpha,
         rerank_top_n=30,
     )
 
@@ -182,6 +191,7 @@ def api_recommend():
         "side": side,
         "slot": slot,
         "recommendations": recs,
+        "wide_deep_available": wide_deep_adapter.available,
         "prob_source": prob_source,
         "model_version": model_version,
         "warnings": warnings,
@@ -220,12 +230,21 @@ def api_evaluate():
     avg_blue_score = sum(blue_scores) / len(blue_scores)
     avg_red_score = 100.0 - avg_blue_score
 
+    # Always derive the heuristic prob from the avg score so the frontend toggle
+    # can display either source side-by-side.
+    blue_win_prob_heuristic = max(0.0, min(1.0, 0.50 + (avg_blue_score - 50.0) * 0.01))
+    red_win_prob_heuristic = 1.0 - blue_win_prob_heuristic
+
     if wide_deep_adapter.available:
-        blue_win_prob = wide_deep_adapter.predict_blue_win_prob(blue_picks, red_picks)
-        red_win_prob = 1.0 - blue_win_prob
+        blue_win_prob_wide_deep = wide_deep_adapter.predict_blue_win_prob(blue_picks, red_picks)
+        red_win_prob_wide_deep = 1.0 - blue_win_prob_wide_deep
+        blue_win_prob = blue_win_prob_wide_deep
+        red_win_prob = red_win_prob_wide_deep
     else:
-        blue_win_prob = max(0.0, min(1.0, 0.50 + (avg_blue_score - 50.0) * 0.01))
-        red_win_prob = 1.0 - blue_win_prob
+        blue_win_prob_wide_deep = None
+        red_win_prob_wide_deep = None
+        blue_win_prob = blue_win_prob_heuristic
+        red_win_prob = red_win_prob_heuristic
 
     prob_source, model_version, base_warnings = _adapter_status()
     warnings = base_warnings
@@ -235,6 +254,11 @@ def api_evaluate():
         "blue_win_prob": round(blue_win_prob, 4),
         "red_score": round(avg_red_score, 1),
         "red_win_prob": round(red_win_prob, 4),
+        "blue_win_prob_wide_deep": None if blue_win_prob_wide_deep is None else round(blue_win_prob_wide_deep, 4),
+        "red_win_prob_wide_deep": None if red_win_prob_wide_deep is None else round(red_win_prob_wide_deep, 4),
+        "blue_win_prob_heuristic": round(blue_win_prob_heuristic, 4),
+        "red_win_prob_heuristic": round(red_win_prob_heuristic, 4),
+        "wide_deep_available": wide_deep_adapter.available,
         "prob_source": prob_source,
         "model_version": model_version,
         "warnings": warnings,
