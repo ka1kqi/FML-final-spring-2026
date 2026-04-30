@@ -1,0 +1,101 @@
+"""Tests for WideDeepDraftAdapter — must boot gracefully when artifacts are missing."""
+import json
+from pathlib import Path
+
+import pytest
+import torch
+
+from src.inference.wide_deep_adapter import WideDeepDraftAdapter
+from src.models.wide_deep import (
+    PAD_TOKEN,
+    UNK_TOKEN,
+    ROLE_ORDER,
+    WideDeepDraftNet,
+)
+
+
+def test_missing_artifacts_does_not_raise(tmp_path: Path):
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    assert adapter.available is False
+
+
+def test_missing_artifacts_predict_returns_none(tmp_path: Path):
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    assert adapter.predict_blue_win_prob([], []) is None
+    assert adapter.predict_side_win_prob([], [], side="blue") is None
+
+
+def _write_fake_artifacts(tmp_path: Path, champions: list[str]) -> None:
+    """Write a minimal valid set of W&D artifacts to a temp dir."""
+    vocab = {
+        "champion_to_id": {PAD_TOKEN: 0, UNK_TOKEN: 1, **{c: i + 2 for i, c in enumerate(champions)}},
+        "id_to_champion": {0: PAD_TOKEN, 1: UNK_TOKEN, **{i + 2: c for i, c in enumerate(champions)}},
+        "pad_token": PAD_TOKEN,
+        "unk_token": UNK_TOKEN,
+        "role_order": ROLE_ORDER,
+    }
+    (tmp_path / "wide_deep_vocab.json").write_text(json.dumps(vocab))
+    config = {
+        "model_name": "wide_deep_draft_v1",
+        "embedding_dim": 8,
+        "hidden_dims": [16, 8],
+        "dropout": 0.0,
+        "champion_dropout": 0.0,
+        "target": "blue_win",
+        "output": "blue_win_prob",
+    }
+    (tmp_path / "wide_deep_config.json").write_text(json.dumps(config))
+    net = WideDeepDraftNet(
+        num_champions=len(champions) + 2,
+        embedding_dim=config["embedding_dim"],
+        hidden_dims=tuple(config["hidden_dims"]),
+        dropout=config["dropout"],
+    )
+    torch.save(net.state_dict(), tmp_path / "wide_deep.pt")
+
+
+def test_loads_when_artifacts_present(tmp_path: Path):
+    _write_fake_artifacts(tmp_path, ["Yasuo", "Jinx", "Thresh", "LeeSin", "Garen"])
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    assert adapter.available is True
+
+
+def test_predict_blue_win_prob_with_dict_input(tmp_path: Path):
+    _write_fake_artifacts(tmp_path, ["Yasuo", "Jinx", "Thresh", "LeeSin", "Garen"])
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    blue = {"TOP": "Garen", "JUNGLE": "LeeSin", "MIDDLE": "Yasuo", "BOTTOM": "Jinx", "UTILITY": "Thresh"}
+    red = {"TOP": "Yasuo", "JUNGLE": "LeeSin", "MIDDLE": "Garen", "BOTTOM": "Jinx", "UTILITY": "Thresh"}
+    p = adapter.predict_blue_win_prob(blue, red)
+    assert p is not None
+    assert 0.0 <= p <= 1.0
+
+
+def test_predict_blue_win_prob_with_partial_list_input(tmp_path: Path):
+    _write_fake_artifacts(tmp_path, ["Yasuo", "Jinx", "Thresh", "LeeSin", "Garen"])
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    blue = ["Garen", None, "Yasuo", None, None]  # partial — Nones become __PAD__
+    red = [None] * 5
+    p = adapter.predict_blue_win_prob(blue, red)
+    assert p is not None
+    assert 0.0 <= p <= 1.0
+
+
+def test_unknown_champion_maps_to_unk(tmp_path: Path):
+    _write_fake_artifacts(tmp_path, ["Yasuo", "Jinx", "Thresh", "LeeSin", "Garen"])
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    blue = ["NotAChampion", None, None, None, None]
+    red = [None] * 5
+    p = adapter.predict_blue_win_prob(blue, red)
+    assert p is not None
+    assert 0.0 <= p <= 1.0
+
+
+def test_side_conversion(tmp_path: Path):
+    _write_fake_artifacts(tmp_path, ["Yasuo", "Jinx", "Thresh", "LeeSin", "Garen"])
+    adapter = WideDeepDraftAdapter(model_dir=tmp_path)
+    blue = {"TOP": "Garen", "JUNGLE": "LeeSin", "MIDDLE": "Yasuo", "BOTTOM": "Jinx", "UTILITY": "Thresh"}
+    red = {"TOP": "Yasuo", "JUNGLE": "LeeSin", "MIDDLE": "Garen", "BOTTOM": "Jinx", "UTILITY": "Thresh"}
+    p_blue = adapter.predict_side_win_prob(blue, red, side="blue")
+    p_red = adapter.predict_side_win_prob(blue, red, side="red")
+    assert p_blue is not None and p_red is not None
+    assert abs((p_blue + p_red) - 1.0) < 1e-5
