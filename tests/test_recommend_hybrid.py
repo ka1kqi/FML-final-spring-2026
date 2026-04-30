@@ -157,13 +157,18 @@ class _WDPerCandidateStub:
         self.batch_calls = 0
         self.single_calls = 0
 
-    def predict_blue_win_prob_batch(self, blue_picks_list, red_picks_list):
+    def predict_blue_win_prob_batch_with_raw(self, blue_picks_list, red_picks_list):
         self.batch_calls += 1
         out = []
         for blue, red in zip(blue_picks_list, red_picks_list):
             inserted = next((c for c in blue + red if c and c in self._name_to_prob), None)
-            out.append(self._name_to_prob.get(inserted, 0.5))
+            p = self._name_to_prob.get(inserted, 0.5)
+            out.append((p, p))  # (calibrated, raw)
         return out
+
+    def predict_blue_win_prob_batch(self, blue_picks_list, red_picks_list):
+        return [pair[0] for pair in self.predict_blue_win_prob_batch_with_raw(
+            blue_picks_list, red_picks_list)]
 
     def predict_side_win_prob(self, blue, red, side):
         self.single_calls += 1

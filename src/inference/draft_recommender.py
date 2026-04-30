@@ -371,9 +371,15 @@ def _wide_deep_only_recommend(
 ):
     """Enumerate every legal candidate and rank purely by W&D side win prob.
 
-    Uses the adapter's batch helper when available so 150+ candidates are
-    scored in a single forward pass. Falls back to per-candidate calls if the
-    adapter is a stub without ``predict_blue_win_prob_batch`` (e.g. tests).
+    Ranking uses the *raw* (pre-calibration) probability so the isotonic
+    calibrator's piecewise-constant plateaus don't collapse many candidates onto
+    the same value. The displayed ``win_prob`` is the calibrated value (for
+    interpretability), but the ``final_rank_score`` is the uncalibrated one — so
+    even when several cards show the same calibrated number their ordering is
+    deterministic and reflects what the model actually distinguishes.
+
+    Falls back to ``predict_side_win_prob`` if the adapter is a stub without
+    the batched-with-raw helper (e.g. unit-test stubs).
     """
     blue_lists, red_lists, names = [], [], []
     for name in pool:
@@ -384,34 +390,46 @@ def _wide_deep_only_recommend(
         red_lists.append(trial_red)
         names.append(name)
 
-    batch_fn = getattr(wide_deep_adapter, "predict_blue_win_prob_batch", None)
-    if callable(batch_fn):
-        wd_blues = batch_fn(blue_lists, red_lists)
+    raw_fn = getattr(wide_deep_adapter, "predict_blue_win_prob_batch_with_raw", None)
+    if callable(raw_fn):
+        pairs = raw_fn(blue_lists, red_lists)
     else:
-        wd_blues = [
+        # Stub fallback: use the side-prob helper, treat raw == calibrated.
+        side_probs = [
             wide_deep_adapter.predict_side_win_prob(b, r, "blue")
             for b, r in zip(blue_lists, red_lists)
         ]
+        pairs = [None if p is None else (p, p) for p in side_probs]
 
     results = []
-    for name, wd_blue in zip(names, wd_blues):
-        if wd_blue is None:
+    for name, pair in zip(names, pairs):
+        if pair is None:
             continue
-        wd_side = wd_blue if side == "blue" else 1.0 - wd_blue
-        # Heuristic stays available for diagnostics; perf maps from the same
-        # win prob so the legacy 0–100 display remains consistent.
-        perf_pct = wd_side * 100.0
+        cal_blue, raw_blue = pair
+        cal_side = cal_blue if side == "blue" else 1.0 - cal_blue
+        raw_side = raw_blue if side == "blue" else 1.0 - raw_blue
+        # Display the *raw* (pre-calibration) probability in the recommend cards
+        # so candidates with truly distinct model outputs show distinct numbers.
+        # The isotonic calibrator quantises probs onto ~9 plateaus across [0,1]
+        # which collapses fine-grained ranking; calibration is still applied at
+        # /api/evaluate where the user expects the displayed prob to reflect
+        # real-world frequency. The new architecture (PMI init + early stopping
+        # + augmentation) keeps raw probs in a sensible range without needing
+        # calibration to avoid extremes.
+        perf_pct = raw_side * 100.0
         win_prob_heuristic = _legacy_win_prob(perf_pct)
         results.append({
             "champion": name,
             "score": round(perf_pct, 1),
             "performance_score": round(perf_pct, 2),
-            "win_prob": round(wd_side, 4),
-            "wide_deep_blue_win_prob": round(wd_blue, 4),
-            "wide_deep_side_win_prob": round(wd_side, 4),
-            "win_prob_wide_deep": round(wd_side, 4),
+            "win_prob": round(raw_side, 4),
+            "wide_deep_blue_win_prob": round(raw_blue, 4),
+            "wide_deep_side_win_prob": round(raw_side, 4),
+            "win_prob_wide_deep": round(raw_side, 4),
+            # Calibrated copy for callers that want it (none currently use it).
+            "win_prob_wide_deep_calibrated": round(cal_side, 4),
             "win_prob_heuristic": round(win_prob_heuristic, 4),
-            "final_rank_score": round(wd_side, 4),
+            "final_rank_score": round(raw_side, 4),
             "prob_source": "wide_deep",
         })
 

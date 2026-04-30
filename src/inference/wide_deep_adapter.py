@@ -86,11 +86,27 @@ class WideDeepDraftAdapter:
         blue_picks_list: Sequence[Mapping[str, str | None] | Sequence[str | None]],
         red_picks_list: Sequence[Mapping[str, str | None] | Sequence[str | None]],
     ) -> list[float | None]:
-        """Vectorised version of ``predict_blue_win_prob``.
+        """Vectorised calibrated-probability version of ``predict_blue_win_prob``.
 
         Returns a list of probabilities in [eps, 1-eps] (or all None if the
-        adapter is unavailable). Used by recommend_hybrid to score every legal
-        candidate in a single forward pass.
+        adapter is unavailable). For ranking, prefer
+        ``predict_blue_win_prob_batch_with_raw`` which exposes the pre-calibration
+        score so ties from the isotonic plateau don't collapse the order.
+        """
+        out = self.predict_blue_win_prob_batch_with_raw(blue_picks_list, red_picks_list)
+        return [None if pair is None else pair[0] for pair in out]
+
+    def predict_blue_win_prob_batch_with_raw(
+        self,
+        blue_picks_list: Sequence[Mapping[str, str | None] | Sequence[str | None]],
+        red_picks_list: Sequence[Mapping[str, str | None] | Sequence[str | None]],
+    ) -> list[tuple[float, float] | None]:
+        """Return (calibrated_prob, raw_prob) per pair, or None if unavailable.
+
+        Raw is the pre-calibration sigmoid output; useful as a tie-breaker for
+        ranking because IsotonicRegression collapses many input values onto the
+        same plateau (and for empty/sparse drafts almost every candidate ends
+        up in the same plateau, producing identical calibrated probs).
         """
         if not self._available or self._model is None:
             return [None] * len(blue_picks_list)
@@ -102,15 +118,17 @@ class WideDeepDraftAdapter:
         red_ids = torch.stack([self._encode(r) for r in red_picks_list])
         with torch.no_grad():
             logits = self._model(blue_ids, red_ids)
-            probs = torch.sigmoid(logits).cpu().numpy()
-        # Calibrate vector-wise if possible (IsotonicRegression supports arrays).
+            raw_probs = torch.sigmoid(logits).cpu().numpy()
+        cal_probs = raw_probs
         if self._calibrator is not None:
             try:
-                probs = np.asarray(self._calibrator.predict(probs), dtype=np.float64)
+                cal_probs = np.asarray(self._calibrator.predict(raw_probs), dtype=np.float64)
             except (ValueError, AttributeError) as exc:  # noqa: BLE001
                 logger.warning("calibrator.predict failed (%s); using raw probs", exc)
-        probs = np.clip(probs, _PROB_CLIP_LO, _PROB_CLIP_HI)
-        return [float(p) for p in probs]
+                cal_probs = raw_probs
+        cal_probs = np.clip(cal_probs, _PROB_CLIP_LO, _PROB_CLIP_HI)
+        raw_probs = np.clip(raw_probs, _PROB_CLIP_LO, _PROB_CLIP_HI)
+        return [(float(c), float(r)) for c, r in zip(cal_probs, raw_probs)]
 
     def predict_side_win_prob(
         self,
