@@ -85,9 +85,10 @@ function syncProbToggleUI() {
 }
 
 // Pick the displayed win prob from a rec dict according to the toggle.
-// match_classifier isn't available per-pick (needs full 5v5), so it falls
-// through to the heuristic for the recommend cards.
 function pickWinProb(rec) {
+  if (probSource === "match_classifier" && rec.win_prob_match_classifier != null) {
+    return rec.win_prob_match_classifier;
+  }
   if (probSource === "wide_deep" && rec.win_prob_wide_deep != null) {
     return rec.win_prob_wide_deep;
   }

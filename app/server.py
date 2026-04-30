@@ -448,6 +448,11 @@ def api_recommend():
     # final_rank_score == norm_perf and the top-K is the true top-K by perf score.
     adapter_for_call = wide_deep_adapter if rank_source != "heuristic" else None
 
+    # MatchClf mode: rerank a wider top-N (so we have room to reorder by match_clf
+    # before slicing top_k). For other modes the original 5/30 split is enough.
+    use_match_clf = rank_source == "match_classifier" and match_model is not None
+    inner_top_k = max(top_k, 30) if use_match_clf else top_k
+
     recs = recommend_hybrid(
         step=step,
         blue_picks=blue_picks,
@@ -457,26 +462,100 @@ def api_recommend():
         champ_scores=champ_scores,
         candidate_pool=candidate_pool,
         banned=banned,
-        top_k=top_k,
+        top_k=inner_top_k,
         wide_deep_adapter=adapter_for_call,
         alpha=alpha,
         rerank_top_n=30,
     )
 
-    prob_source, model_version, warnings = _adapter_status()
+    # ---- MatchClf per-candidate scoring ----
+    # match_classifier expects a full 5v5. During the per-pick phase we substitute
+    # zero-vector embeddings for unfilled slots so the model produces something
+    # that varies per candidate (output is noisier than the /api/evaluate path
+    # because the model wasn't trained on partial drafts, but the *ranking* is
+    # still meaningful — what matters for the toggle UX).
+    EMBED_DIM = next(iter(embed_dict.values())).shape[0] if embed_dict else 64
+    NEUTRAL_VEC = np.zeros(EMBED_DIM, dtype=np.float32)
+    NEUTRAL_SCORE = 50.0
 
-    # Post-process recommend_hybrid dicts: blend popularity bonus in logit space
-    # (matches the original /api/recommend behaviour) and add a pick_rate field.
+    def _build_partial_match_features(blue, red):
+        """build_match_features but tolerant of None slots (substituted with zero vecs)."""
+        from src.features.synergy_features import predicted_synergy, predicted_counter
+
+        def _vecs_and_scores(team):
+            vecs, scores = [], []
+            for c in team:
+                if c and c in embed_dict:
+                    vecs.append(embed_dict[c])
+                    scores.append(champ_scores.get(c, NEUTRAL_SCORE))
+                else:
+                    vecs.append(NEUTRAL_VEC)
+                    scores.append(NEUTRAL_SCORE)
+            return np.array(vecs, dtype=np.float32), scores
+
+        blue_vecs, blue_scores = _vecs_and_scores(blue)
+        red_vecs, red_scores = _vecs_and_scores(red)
+
+        embed_diff = blue_vecs.mean(axis=0) - red_vecs.mean(axis=0)
+
+        def team_syn(team_vecs):
+            syns = [predicted_synergy(team_vecs[i], team_vecs[j], EMBED_DIM)
+                    for i in range(len(team_vecs)) for j in range(len(team_vecs)) if i != j]
+            return float(np.mean(syns)) if syns else 0.0
+
+        def team_matchup(team_vecs, enemy_vecs):
+            mu = [predicted_counter(c, e, EMBED_DIM) for c in team_vecs for e in enemy_vecs]
+            return float(np.mean(mu)) if mu else 0.0
+
+        synergy_delta = team_syn(blue_vecs) - team_syn(red_vecs)
+        matchup_delta = team_matchup(blue_vecs, red_vecs) - team_matchup(red_vecs, blue_vecs)
+        score_delta = float(np.mean(blue_scores) - np.mean(red_scores))
+        return np.concatenate([embed_diff,
+                               np.array([synergy_delta, matchup_delta, score_delta], dtype=np.float32)
+                               ]).astype(np.float32)
+
+    def _match_clf_prob(candidate_name, side_lc, slot_idx):
+        trial_blue = list(blue_picks)
+        trial_red = list(red_picks)
+        (trial_blue if side_lc == "blue" else trial_red)[slot_idx] = candidate_name
+        try:
+            feats = _build_partial_match_features(trial_blue, trial_red)
+            blue_p = float(match_model.predict_proba(feats.reshape(1, -1))[0, 1])
+        except (KeyError, ValueError):
+            return None
+        return blue_p if side_lc == "blue" else 1.0 - blue_p
+
+    side_lc = side.lower()
+    for r in recs:
+        r["win_prob_match_classifier"] = None
+        if use_match_clf:
+            mc = _match_clf_prob(r["champion"], side_lc, slot)
+            if mc is not None:
+                r["win_prob_match_classifier"] = round(mc, 4)
+
+    # Post-process: blend popularity bonus into win_prob (color hint) and add pick_rate.
     data_role = APP_TO_DATA_ROLE.get(role_filter)
     for r in recs:
         pop_bonus = role_pop_bonus.get(data_role, {}).get(r["champion"], 0.0) if data_role else 0.0
         pick_rate = role_pick_rate.get(data_role, {}).get(r["champion"], 0.0) if data_role else 0.0
-        # Blend the displayed win_prob in logit space; keep raw prob untouched.
         if pop_bonus and 0.0 < r["win_prob"] < 1.0:
             r["win_prob"] = round(_sigmoid(_logit(r["win_prob"]) + POPULARITY_WEIGHT_LOGIT * pop_bonus), 4)
         r["pick_rate"] = round(pick_rate * 100, 1)
-    # Re-sort after popularity blend (some champions may swap order)
-    recs.sort(key=lambda r: r["final_rank_score"], reverse=True)
+
+    # Final sort + top_k slice depends on toggle so the displayed prob is monotonic.
+    if use_match_clf:
+        # Some candidates may have None (full-team failure) — push those to the bottom.
+        recs.sort(
+            key=lambda r: (r["win_prob_match_classifier"] is None, -(r["win_prob_match_classifier"] or 0.0))
+        )
+        active_source = "match_classifier"
+    else:
+        recs.sort(key=lambda r: r["final_rank_score"], reverse=True)
+        active_source = "heuristic" if rank_source == "heuristic" else "wide_deep"
+
+    recs = recs[:top_k]
+
+    _, model_version, warnings = _adapter_status()
 
     return jsonify({
         "step": step,
@@ -484,7 +563,8 @@ def api_recommend():
         "slot": slot,
         "recommendations": recs,
         "wide_deep_available": wide_deep_adapter.available,
-        "prob_source": prob_source,
+        "match_classifier_available": match_model is not None,
+        "prob_source": active_source,
         "model_version": model_version,
         "warnings": warnings,
     })
