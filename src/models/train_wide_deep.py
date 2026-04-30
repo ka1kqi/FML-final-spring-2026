@@ -87,6 +87,12 @@ def build_match_table(comp_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_vocab(match_df: pd.DataFrame) -> dict:
+    """Build the champion <-> id vocab used by the model and adapter.
+
+    Reserves id 0 for ``__PAD__`` (unfilled slot) and id 1 for ``__UNK__``
+    (unknown champion at inference). Champion names are sorted alphabetically
+    so the assignment is deterministic across runs.
+    """
     champs = set()
     for s in ("blue", "red"):
         for r in ROLE_ORDER:
@@ -111,6 +117,13 @@ def encode_match(row, champion_to_id: dict) -> tuple[list[int], list[int]]:
 
 
 class DraftDataset(Dataset):
+    """Match-level dataset for Wide & Deep training.
+
+    Holds blue/red champion-id arrays + blue_win labels. When ``champ_dropout``
+    is positive, ``__getitem__`` randomly replaces some ids with ``PAD_ID`` so
+    the model learns to handle partial drafts at inference time.
+    """
+
     def __init__(self, blue: np.ndarray, red: np.ndarray, y: np.ndarray, champ_dropout: float = 0.0):
         self.blue = torch.tensor(blue, dtype=torch.long)
         self.red = torch.tensor(red, dtype=torch.long)
