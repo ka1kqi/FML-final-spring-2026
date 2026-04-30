@@ -34,6 +34,7 @@ let phase = "ban-blue"; // ban-blue, ban-red, pick, complete
 let recommendations = [];
 let swapState = null; // { side, slot } if swapping
 let recOffset = 0;
+let recommendWarnings = []; // non-breaking: backend warning strings (e.g. W&D fallback)
 
 // ---------- Init ----------
 document.addEventListener("DOMContentLoaded", async () => {
@@ -90,9 +91,11 @@ async function fetchRecommendations() {
     const data = await resp.json();
     recommendations = data.recommendations || [];
     recOffset = 0;
+    recommendWarnings = (data && data.warnings && data.warnings.length) ? data.warnings : [];
   } catch (e) {
     console.error("Failed to fetch recommendations:", e);
     recommendations = [];
+    recommendWarnings = [];
   }
 }
 
@@ -432,6 +435,24 @@ function renderPhaseInfo() {
 function renderRecommendations() {
   const list = document.getElementById("rec-list");
   list.innerHTML = "";
+
+  // Non-breaking: surface backend warnings if present (e.g., Wide & Deep fallback)
+  if (recommendWarnings && recommendWarnings.length) {
+    const container =
+        document.querySelector('#rec-list') ||
+        document.querySelector('.recommendations-panel') ||
+        document.body;
+    let warnEl = document.querySelector('.recommend-warning');
+    if (!warnEl) {
+      warnEl = document.createElement('div');
+      warnEl.className = 'recommend-warning';
+      container.prepend(warnEl);
+    }
+    warnEl.textContent = '⚠ ' + recommendWarnings.join(' ');
+  } else {
+    const stale = document.querySelector('.recommend-warning');
+    if (stale) stale.remove();
+  }
 
   if (phase !== "pick" || recommendations.length === 0) {
     const empty = document.createElement("div");

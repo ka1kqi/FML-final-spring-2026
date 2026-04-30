@@ -1341,3 +1341,12 @@ body {
 .hidden { display: none !important; }
 .positive { color: #00FFCC !important; }
 .negative { color: #FF4655 !important; }
+.recommend-warning {
+    color: #b08800;
+    background: #fff8d8;
+    border: 1px solid #e6c800;
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    font-size: 0.9em;
+}
