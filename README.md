@@ -65,7 +65,7 @@ A `HistGradientBoostingRegressor` is trained on these features to predict the in
 ```text
 FML-final-spring-2026/
 ├── app/                  # Flask Web Server & Live Frontend UI
-│   ├── server.py         # REST API endpoints (+ /similar, /api/similar)
+│   ├── server.py         # REST API endpoints
 │   └── static/           # Vanilla CSS/JS and HTML
 ├── data/                 
 │   ├── processed/        # Saved ML Models (.joblib, .npz, .json, .pt)
@@ -92,9 +92,6 @@ python app/server.py
 The demo starts on `http://localhost:8080`. No Riot API key, raw data download,
 or retraining is needed — pretrained artifacts under
 `data/processed/draft_models/` are sufficient.
-
-Additional pages:
-- **Champion Similarity (Pivot Pool)**: `http://127.0.0.1:8080/similar`
 
 To retrain from scratch (optional, only if you pull new Riot API data):
 
