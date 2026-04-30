@@ -606,9 +606,16 @@ function filterGridDropdown(type, query) {
 
 function renderGridToDropdown(container, type, query) {
   container.innerHTML = "";
-  const filtered = allChampions.filter(c => c.name.toLowerCase().includes(query.toLowerCase()));
-  
-  filtered.forEach(champ => {
+  let pool = allChampions.filter(c => c.name.toLowerCase().includes(query.toLowerCase()));
+
+  // Compare grid is constrained to the selected lane: only champions
+  // who play (>=10% share) the same role as the main champion appear.
+  if (type === "compare" && analysisSelectedRole) {
+    pool = pool.filter(c => getPlayableRolesData(c.name).includes(analysisSelectedRole));
+    if (analysisMainChamp) pool = pool.filter(c => c.name !== analysisMainChamp);
+  }
+
+  pool.forEach(champ => {
     const cell = document.createElement("div");
     cell.className = "dropdown-grid-cell";
     cell.title = champ.name;
@@ -629,41 +636,110 @@ document.addEventListener("click", (e) => {
 });
 
 // ---------- Champion Analysis Logic ----------
+const APP_ROLE_TO_DATA_ROLE = {Top:"TOP", Jungle:"JUNGLE", Mid:"MIDDLE", ADC:"BOTTOM", Support:"UTILITY"};
+const DATA_ROLE_TO_APP_ROLE = {TOP:"Top", JUNGLE:"Jungle", MIDDLE:"Mid", BOTTOM:"ADC", UTILITY:"Support"};
+const DATA_ROLE_LABEL = {TOP:"Top", JUNGLE:"Jungle", MIDDLE:"Mid", BOTTOM:"ADC", UTILITY:"Support"};
+
 let analysisMainChamp = null;
 let analysisCompareChamp = null;
-let analysisSelectedRole = "MIDDLE"; // Default
+let analysisSelectedRole = null;  // assigned when a main champion is picked
+
+function getPlayableRolesData(name) {
+  // Returns DATA-format roles (TOP/JUNGLE/MIDDLE/BOTTOM/UTILITY) for any
+  // role the champion plays >=10% of the time. Uses `roles_loose` from
+  // /api/champions, which is data-format already; falls back to `roles`
+  // (strict 60%, app-format) for older builds without the field.
+  const c = allChampions.find(ch => ch.name === name);
+  if (!c) return [];
+  if (c.roles_loose && c.roles_loose.length) return c.roles_loose;
+  if (c.roles && c.roles.length) return c.roles.map(r => APP_ROLE_TO_DATA_ROLE[r]).filter(Boolean);
+  return [];
+}
+
+function updateRoleButtonStates() {
+  const playable = analysisMainChamp ? new Set(getPlayableRolesData(analysisMainChamp)) : new Set();
+  document.querySelectorAll(".role-mini-btn").forEach(btn => {
+    const m = btn.getAttribute("onclick").match(/'([A-Z]+)'/);
+    if (!m) return;
+    const role = m[1];
+    const ok = playable.has(role);
+    btn.classList.toggle("active", role === analysisSelectedRole && ok);
+    btn.classList.toggle("disabled", !ok);
+    btn.disabled = !ok;
+  });
+}
 
 function setAnalysisRole(role) {
+  if (!analysisMainChamp) return;
+  const playable = new Set(getPlayableRolesData(analysisMainChamp));
+  if (!playable.has(role)) return;  // ignore clicks on non-playable roles
+
   analysisSelectedRole = role;
-  // Update buttons
-  document.querySelectorAll(".role-mini-btn").forEach(btn => {
-    btn.classList.toggle("active", btn.getAttribute("onclick").includes(role));
-  });
+
+  // If the current compare champion can't play this role, clear it
+  if (analysisCompareChamp) {
+    const cmpRoles = getPlayableRolesData(analysisCompareChamp);
+    if (!cmpRoles.includes(role)) {
+      analysisCompareChamp = null;
+      document.getElementById("analysis-search-compare").value = "";
+    }
+  }
+  updateRoleButtonStates();
   fetchAnalysisData();
 }
 
 async function selectAnalysisChamp(type, name) {
   document.getElementById(`analysis-search-${type}`).value = name;
-  
+
   if (type === "main") {
     analysisMainChamp = name;
+    const playable = getPlayableRolesData(name);
+    if (playable.length === 0) {
+      // No qualifying role — render an empty/error state and bail.
+      analysisSelectedRole = null;
+      analysisCompareChamp = null;
+      updateRoleButtonStates();
+      return;
+    }
+    // If the current role isn't playable for this champion, switch to the
+    // first playable one. (The /api/champions response doesn't carry pick
+    // percentages, so we use list order — server already sorts roles by
+    // pick share when building the list.)
+    if (!analysisSelectedRole || !playable.includes(analysisSelectedRole)) {
+      analysisSelectedRole = playable[0];
+    }
+    // Drop a compare champion that can't play the new role
+    if (analysisCompareChamp) {
+      const cmpRoles = getPlayableRolesData(analysisCompareChamp);
+      if (!cmpRoles.includes(analysisSelectedRole)) {
+        analysisCompareChamp = null;
+        document.getElementById("analysis-search-compare").value = "";
+      }
+    }
+    updateRoleButtonStates();
   } else {
+    // Compare-grid is already filtered, but defensive-check anyway
+    const cmpRoles = getPlayableRolesData(name);
+    if (!cmpRoles.includes(analysisSelectedRole)) return;
     analysisCompareChamp = name;
   }
   await fetchAnalysisData();
 }
 
 async function fetchAnalysisData() {
-  if (!analysisMainChamp) return;
+  if (!analysisMainChamp || !analysisSelectedRole) return;
 
-  let url = `/api/analysis?champ=${encodeURIComponent(analysisMainChamp)}&role=${analysisSelectedRole}`;
+  let url = `/api/role_analysis?champ=${encodeURIComponent(analysisMainChamp)}`
+          + `&role=${analysisSelectedRole}`;
   if (analysisCompareChamp) {
-    url += `&compare=${encodeURIComponent(analysisCompareChamp)}`;
+    // Same-role comparison is the constraint
+    url += `&compare=${encodeURIComponent(analysisCompareChamp)}&compare_role=${analysisSelectedRole}`;
   }
 
   try {
     const resp = await fetch(url);
     const data = await resp.json();
+    if (data.error) { console.error("role_analysis:", data.error); return; }
     renderAnalysis(data);
   } catch (e) {
     console.error("Failed to fetch analysis data:", e);
@@ -671,30 +747,28 @@ async function fetchAnalysisData() {
 }
 
 function renderAnalysis(data) {
-  // Update Background Splash
+  // Splash background
   const splash = document.getElementById("analysis-bg-splash");
   const champObj = allChampions.find(c => c.name.toLowerCase() === data.champion.toLowerCase());
   const ddragonId = champObj ? champObj.id : data.champion.replace(/[^a-zA-Z]/g, '');
-  
-  const splashUrl = `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${ddragonId}_0.jpg`;
-  
-  splash.style.backgroundImage = `url(${splashUrl})`;
+  splash.style.backgroundImage = `url(https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${ddragonId}_0.jpg)`;
   splash.style.opacity = "1";
 
-  // Main Content
+  // Main panel
   document.getElementById("analysis-main-content").classList.remove("hidden");
   document.getElementById("analysis-main-name").textContent = data.champion;
   document.getElementById("analysis-main-img").src = getChampImg(data.champion);
-  
-  // Update WR
+
   const wrEl = document.getElementById("analysis-wr");
   wrEl.textContent = `WR ${data.win_rate}%`;
-  wrEl.style.background = data.win_rate >= 50 ? "linear-gradient(135deg, #00C8FF, #0044FF)" : "linear-gradient(135deg, #FF4655, #880000)";
+  wrEl.style.background = data.win_rate >= 50
+    ? "linear-gradient(135deg, #00C8FF, #0044FF)"
+    : "linear-gradient(135deg, #FF4655, #880000)";
 
-  // Role Bars
+  // Role distribution bars (whole-champion percentages)
   const roleContainer = document.getElementById("analysis-role-bars");
   roleContainer.innerHTML = "";
-  const sortedRoles = Object.entries(data.roles).sort((a, b) => b[1] - a[1]);
+  const sortedRoles = Object.entries(data.roles || {}).sort((a, b) => b[1] - a[1]);
   sortedRoles.forEach(([role, pct]) => {
     const row = document.createElement("div");
     row.className = "role-stat-row";
@@ -710,99 +784,72 @@ function renderAnalysis(data) {
     roleContainer.appendChild(row);
   });
 
-  // Meta Lists
   document.getElementById("analysis-lists-content").classList.remove("hidden");
-  
-  document.getElementById("header-synergies").textContent = `Cross-Role Synergies`;
-  const roleLabel = analysisSelectedRole === "MIDDLE" ? "Mid" : analysisSelectedRole;
-  document.getElementById("header-counters").textContent = `${data.champion} ${roleLabel} Counters`;
-  document.getElementById("header-countered-by").textContent = `Threats to ${data.champion} ${roleLabel}`;
 
-  // Role Grouped Synergies
+  const roleLabel = DATA_ROLE_LABEL[analysisSelectedRole] || analysisSelectedRole;
+  // Right panel is now a focused matchup view: best matchups + worst matchups
+  // for the selected (champion, role). Cross-role synergies are removed —
+  // they live in the comparison panel when a same-role compare is set.
+  const synHeader = document.getElementById("header-synergies");
   const synGrid = document.getElementById("list-synergies-grouped");
+  synHeader.style.display = "none";
   synGrid.innerHTML = "";
-  
-  Object.entries(data.role_synergies).forEach(([role, champs]) => {
-    if (role === analysisSelectedRole) return; // Don't show synergy with same role
-    if (champs.length === 0) return;
+  document.getElementById("header-counters").textContent = `${data.champion} (${roleLabel}) — Top 5 Best Matchups`;
+  document.getElementById("header-countered-by").textContent = `${data.champion} (${roleLabel}) — Top 5 Worst Matchups`;
 
-    const section = document.createElement("div");
-    section.className = "synergy-role-section";
-    section.innerHTML = `<h4>Best ${role} Partners</h4>`;
-    
-    const list = document.createElement("div");
-    list.className = "meta-list";
-    champs.forEach(item => {
-      const div = document.createElement("div");
-      div.className = "meta-item";
-      div.innerHTML = `
-        <img src="${getChampImg(item.champion)}" alt="${item.champion}">
-        <div class="meta-item-info">
-          <div class="meta-item-name">${item.champion}</div>
-          <div class="meta-item-score positive">Score: ${item.score.toFixed(2)}</div>
-        </div>
-      `;
-      div.onclick = () => {
-        analysisCompareChamp = item.champion;
-        fetchAnalysisData();
-      };
-      list.appendChild(div);
-    });
-    section.appendChild(list);
-    synGrid.appendChild(section);
-  });
+  // Same-lane matchups: best matchups (champ favored) and worst (countered_by)
+  renderMetaList("list-counters", data.same_lane_best || [], "favored");
+  renderMetaList("list-countered-by", data.same_lane_worst || [], "threat");
 
-  renderMetaList("list-counters", data.counters, true);
-  renderMetaList("list-countered-by", data.countered_by, false);
-
-  // Comparison
+  // Direct comparison panel — only same-role pairs
   if (data.comparison) {
     document.getElementById("analysis-compare-empty").classList.add("hidden");
     document.getElementById("analysis-compare-content").classList.remove("hidden");
-    
     document.getElementById("compare-main-img").src = getChampImg(analysisMainChamp);
     document.getElementById("compare-other-img").src = getChampImg(analysisCompareChamp);
-    
-    // Verdict Text Logic
+
     const verdictEl = document.getElementById("comparison-verdict");
     const descEl = document.getElementById("verdict-desc");
-    
-    const syn = data.comparison.synergy_score;
-    const match = data.comparison.matchup_score;
 
-    if (match > 0.08) {
-      verdictEl.textContent = "HARD COUNTER";
-      descEl.textContent = `${analysisMainChamp} mathematically dominates this matchup. Expect significant advantage in direct trades.`;
-    } else if (match > 0.04) {
-      verdictEl.textContent = "FAVORABLE";
-      descEl.textContent = `${analysisMainChamp} has a statistical edge. Solid pick into ${analysisCompareChamp}.`;
-    } else if (syn > 0.15) {
-      verdictEl.textContent = "GOD-TIER SYNERGY";
-      descEl.textContent = `A legendary pairing. Their combined kit utility creates a massive force multiplier for the team.`;
-    } else if (syn > 0.08) {
-      verdictEl.textContent = "STRONG SYNERGY";
-      descEl.textContent = `These champions complement each other's playstyles effectively.`;
+    const myWinPct = data.comparison.win_pct;          // 0-100, sums to 100 with their_win_pct
+    const theirWinPct = data.comparison.their_win_pct;
+    const myScore = data.comparison.matchup_score;     // raw predicted lane score (50 = neutral)
+    const theirScore = data.comparison.their_matchup_score;
+    const edge = myWinPct - 50;
+
+    if (edge > 8) {
+      verdictEl.textContent = "FAVORED";
+      descEl.textContent = `${analysisMainChamp} is the historical favorite in this lane.`;
+    } else if (edge > 3) {
+      verdictEl.textContent = "SLIGHT EDGE";
+      descEl.textContent = `${analysisMainChamp} has a small statistical advantage.`;
+    } else if (edge < -8) {
+      verdictEl.textContent = "UNFAVORABLE";
+      descEl.textContent = `${analysisCompareChamp} is the historical favorite in this lane.`;
+    } else if (edge < -3) {
+      verdictEl.textContent = "SLIGHT DISADVANTAGE";
+      descEl.textContent = `${analysisCompareChamp} has a small statistical advantage.`;
     } else {
-      verdictEl.textContent = "NEUTRAL";
-      descEl.textContent = "Standard interaction level. No significant mathematical advantage or disadvantage detected.";
+      verdictEl.textContent = "EVEN";
+      descEl.textContent = "Both champions perform similarly in this lane on average.";
     }
 
-    // Gauges (Path A scaling)
-    const details = document.querySelector(".comparison-details");
-    details.innerHTML = `
+    document.querySelector(".comparison-details").innerHTML = `
       <div class="gauge-item">
-        <div class="gauge-label">Predicted Synergy</div>
-        <div class="gauge-value">${syn.toFixed(1)}</div>
+        <div class="gauge-label">Predicted ${analysisMainChamp} WIN PROBABILITY</div>
+        <div class="gauge-value">${myWinPct.toFixed(1)}%</div>
         <div class="gauge-bar-bg">
-          <div class="gauge-bar-fill synergy" style="width: ${Math.min(100, Math.max(0, (syn - 45) * 10))}%"></div>
+          <div class="gauge-bar-fill matchup" style="width: ${myWinPct}%"></div>
         </div>
+        <div class="gauge-sublabel">overall performance score: ${myScore.toFixed(1)}</div>
       </div>
       <div class="gauge-item">
-        <div class="gauge-label">Lane Threat</div>
-        <div class="gauge-value">${match.toFixed(1)}</div>
+        <div class="gauge-label">Predicted ${analysisCompareChamp} WIN PROBABILITY</div>
+        <div class="gauge-value">${theirWinPct.toFixed(1)}%</div>
         <div class="gauge-bar-bg">
-          <div class="gauge-bar-fill matchup" style="width: ${Math.min(100, Math.abs(match) * 15)}%"></div>
+          <div class="gauge-bar-fill synergy" style="width: ${theirWinPct}%"></div>
         </div>
+        <div class="gauge-sublabel">overall performance score: ${theirScore.toFixed(1)}</div>
       </div>
     `;
   } else {
@@ -811,23 +858,26 @@ function renderAnalysis(data) {
   }
 }
 
-function renderMetaList(containerId, list, isPositive) {
+function renderMetaList(containerId, list, kind) {
+  // Both lists show win_pct — the same number the comparison panel computes.
+  // "favored" → main champ wins more often; "threat" → main champ wins less.
   const container = document.getElementById(containerId);
   container.innerHTML = "";
   list.forEach(item => {
     const div = document.createElement("div");
     div.className = "meta-item";
-    const scoreClass = isPositive ? (item.score > 0 ? "positive" : "") : (item.score > 0 ? "negative" : "");
+    const winPct = item.win_pct;
+    const scoreClass = winPct >= 50 ? "positive" : "negative";
     div.innerHTML = `
       <img src="${getChampImg(item.champion)}" alt="${item.champion}">
       <div class="meta-item-info">
         <div class="meta-item-name">${item.champion}</div>
-        <div class="meta-item-score ${scoreClass}">Score: ${item.score.toFixed(3)}</div>
+        <div class="meta-item-score ${scoreClass}">${winPct.toFixed(1)}% win</div>
       </div>
     `;
     div.onclick = () => {
-      // Clicking a meta list item updates the comparison
       analysisCompareChamp = item.champion;
+      document.getElementById("analysis-search-compare").value = item.champion;
       fetchAnalysisData();
     };
     container.appendChild(div);

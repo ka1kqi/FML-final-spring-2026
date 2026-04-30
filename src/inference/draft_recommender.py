@@ -183,24 +183,34 @@ def load_draft_resources(models_dir: Path):
     """
     Load all resources needed for draft recommendations.
 
-    Args:
-        models_dir: path to data/processed/draft_models/
-
     Returns:
-        (model, embed_dict, champ_scores) tuple
+        (model, embed_dict, champ_scores, biases) tuple
+        `biases` is a dict with keys
+            mu_syn, b_syn_u, b_syn_v, mu_match, b_match_u, b_match_v
+        each indexed by champion name. Empty dict if the artifact was
+        produced by an older training run that doesn't ship biases.
     """
     from src.models.draft_classifier import load_draft_model
 
     model = load_draft_model(models_dir / "draft_model.joblib")
 
-    # Load embeddings
     data = np.load(str(models_dir / "champion2vec.npz"), allow_pickle=True)
     embed_weights = data["weights"]
-    vocab = data["vocab"].tolist()  # list of champion names
+    vocab = data["vocab"].tolist()
     embed_dict = {name: embed_weights[i] for i, name in enumerate(vocab)}
 
-    # Load champ scores
+    biases: dict = {}
+    if "b_syn_u" in data.files:
+        biases = {
+            "mu_syn": float(data["mu_syn"]),
+            "mu_match": float(data["mu_match"]),
+            "b_syn_u": {n: float(data["b_syn_u"][i]) for i, n in enumerate(vocab)},
+            "b_syn_v": {n: float(data["b_syn_v"][i]) for i, n in enumerate(vocab)},
+            "b_match_u": {n: float(data["b_match_u"][i]) for i, n in enumerate(vocab)},
+            "b_match_v": {n: float(data["b_match_v"][i]) for i, n in enumerate(vocab)},
+        }
+
     with open(models_dir / "champ_scores.json", "r") as f:
         champ_scores = json.load(f)
 
-    return model, embed_dict, champ_scores
+    return model, embed_dict, champ_scores, biases

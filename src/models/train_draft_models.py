@@ -23,7 +23,7 @@ from sklearn.model_selection import train_test_split
 
 from src.models.train_embeddings import (
     train_champion2vec, most_similar, top_synergies, top_counters,
-    compute_primary_roles,
+    compute_primary_roles, train_champion_role_2vec,
 )
 from src.features.synergy_features import compute_champion_scores
 from src.models.draft_classifier import (
@@ -69,9 +69,11 @@ def main():
     print(f"  Train matches: {train_df['match_id'].nunique()} | Val matches: {test_df['match_id'].nunique()}")
 
     # --- Step 2: Train Champion2Vec from scratch ---
-    print("\n[2/6] Training Champion2Vec embeddings from scratch on training data...")
-    embed_dict, vocab = train_champion2vec(train_df, embed_dim=64)
+    print("\n[2/6] Training Champion2Vec embeddings (bias terms + L2-normalized blocks)...")
+    embed_dict, vocab, biases = train_champion2vec(train_df, embed_dim=64)
     print(f"  Trained embeddings for {len(embed_dict)} champions")
+    print(f"  Synergy mu = {biases['mu_syn']:+.3f}  | Matchup mu = {biases['mu_match']:+.3f}")
+    print(f"  |b_syn_u| range: [{biases['b_syn_u'].min():+.3f}, {biases['b_syn_u'].max():+.3f}]")
 
     # Embedding quality check
     print("\n  Archetype neighbors (cosine over full embedding):")
@@ -154,13 +156,38 @@ def main():
     # Save LightGBM model
     save_draft_model(lgb_model, OUTPUT_DIR / "draft_model.joblib")
 
-    # Save embeddings
+    # Save embeddings + bias terms (each 16-d block of `weights` is unit-normalized)
     embed_weights = np.array([embed_dict[c] for c in vocab])
     np.savez(
         OUTPUT_DIR / "champion2vec.npz",
         weights=embed_weights,
         vocab=np.array(vocab),
+        b_syn_u=biases["b_syn_u"],
+        b_syn_v=biases["b_syn_v"],
+        mu_syn=np.float32(biases["mu_syn"]),
+        b_match_u=biases["b_match_u"],
+        b_match_v=biases["b_match_v"],
+        mu_match=np.float32(biases["mu_match"]),
     )
+
+    # --- Step 8: Role-aware embedding (champion, role) units ---
+    # Used by /api/role_analysis to answer queries like
+    # "Akali in MID vs Ahri in MID" — each role gets its own profile.
+    print("\n[8] Training role-aware (champion, role) embedding...")
+    role_embed, role_vocab, role_biases = train_champion_role_2vec(train_df)
+    role_weights = np.array([role_embed[k] for k in role_vocab])
+    np.savez(
+        OUTPUT_DIR / "champion_role_2vec.npz",
+        weights=role_weights,
+        vocab=np.array(role_vocab),
+        b_syn_u=role_biases["b_syn_u"],
+        b_syn_v=role_biases["b_syn_v"],
+        mu_syn=np.float32(role_biases["mu_syn"]),
+        b_match_u=role_biases["b_match_u"],
+        b_match_v=role_biases["b_match_v"],
+        mu_match=np.float32(role_biases["mu_match"]),
+    )
+    print(f"  Saved: champion_role_2vec.npz ({len(role_vocab)} units)")
 
     # Save champion scores
     with open(OUTPUT_DIR / "champ_scores.json", "w") as f:

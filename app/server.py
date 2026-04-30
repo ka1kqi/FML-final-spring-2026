@@ -3,12 +3,15 @@ Flask API server for the LoL Draft Recommender.
 
 Endpoints:
     GET  /              — Serve the draft screen HTML
+    GET  /similar       — Champion embedding similarity (pivot pool) page
     GET  /api/champions — Return champion list with role data
+    GET  /api/similar   — Cosine-nearest champions in Champion2Vec space
     POST /api/recommend — Get top-5 recommendations for current draft step
 """
 
 import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -39,7 +42,30 @@ champ_to_id, id_to_champ, champion_list = load_champion_vocab(PROJECT_ROOT)
 role_options = load_role_champion_options(
     PROJECT_ROOT, min_games_for_role=50, min_role_share=0.6,
 )
-draft_model, embed_dict, champ_scores = load_draft_resources(DRAFT_MODELS_DIR)
+draft_model, embed_dict, champ_scores, embed_biases = load_draft_resources(DRAFT_MODELS_DIR)
+HAS_BIASES = bool(embed_biases)
+
+# Role-aware embedding (each unit is "Champion|ROLE"). Optional artifact —
+# gracefully handle older training runs that didn't ship it.
+ROLE_EMBED_PATH = DRAFT_MODELS_DIR / "champion_role_2vec.npz"
+role_embed_dict: dict = {}
+role_embed_biases: dict = {}
+if ROLE_EMBED_PATH.exists():
+    _r = np.load(str(ROLE_EMBED_PATH), allow_pickle=True)
+    _r_vocab = _r["vocab"].tolist()
+    role_embed_dict = {k: _r["weights"][i] for i, k in enumerate(_r_vocab)}
+    if "b_syn_u" in _r.files:
+        role_embed_biases = {
+            "mu_syn": float(_r["mu_syn"]),
+            "mu_match": float(_r["mu_match"]),
+            "b_syn_u": {k: float(_r["b_syn_u"][i]) for i, k in enumerate(_r_vocab)},
+            "b_syn_v": {k: float(_r["b_syn_v"][i]) for i, k in enumerate(_r_vocab)},
+            "b_match_u": {k: float(_r["b_match_u"][i]) for i, k in enumerate(_r_vocab)},
+            "b_match_v": {k: float(_r["b_match_v"][i]) for i, k in enumerate(_r_vocab)},
+        }
+    print(f"Loaded role-aware embedding: {len(role_embed_dict)} (champion, role) units")
+else:
+    print("WARNING: champion_role_2vec.npz not found — /api/role_analysis disabled")
 
 match_model_path = DRAFT_MODELS_DIR / "match_model.joblib"
 match_model = load_match_model(match_model_path) if match_model_path.exists() else None
@@ -86,6 +112,17 @@ for champ, group in comp_df.groupby("champion_name"):
     for role, pct in role_counts.items():
         if pct >= 0.10:
             lane_pools[role].append(champ)
+
+# Looser threshold for the analysis page: any role the champion plays >=10%
+# of the time. Akali plays Mid 73% and Top 27% — both should be analyzable.
+# Distinct from `champ_roles` (recommender) which uses a much stricter 60%
+# cutoff so off-meta picks don't enter the candidate pool.
+champ_roles_loose: dict[str, list[str]] = {}
+for champ, role_dict in champ_role_stats.items():
+    sorted_roles = sorted(role_dict.items(), key=lambda x: x[1], reverse=True)
+    playable = [r for r, pct in sorted_roles if pct >= 10.0]
+    if playable:
+        champ_roles_loose[champ] = playable
 
 print("Stats, Lane Pools, and popularity bonuses calculated.")
 
@@ -175,11 +212,75 @@ DDRAGON_KEY_MAP = {
 
 DDRAGON_VERSION = "16.8.1"
 
+def _cosine_neighbors(
+    anchor: str,
+    k: int,
+    role_filter: Optional[str] = None,
+) -> Optional[List[dict]]:
+    """Top-k cosine neighbors in full 64-D Champion2Vec space; optional role pool."""
+    if anchor not in embed_dict:
+        return None
+    q = embed_dict[anchor]
+    qn = float(np.linalg.norm(q))
+    if qn < 1e-12:
+        return []
+
+    pairs: List[Tuple[str, float]] = []
+    for name, vec in embed_dict.items():
+        if name == anchor:
+            continue
+        vn = float(np.linalg.norm(vec))
+        if vn < 1e-12:
+            continue
+        sim = float(np.dot(q, vec) / (qn * vn))
+        pairs.append((name, sim))
+
+    pairs.sort(key=lambda x: x[1], reverse=True)
+
+    allowed: Optional[set] = None
+    if role_filter and role_filter.lower() not in ("all", ""):
+        rf = role_filter.strip()
+        key = None
+        if rf in role_options:
+            key = rf
+        else:
+            for rk in role_options:
+                if rk.lower() == rf.lower():
+                    key = rk
+                    break
+        if key is not None:
+            allowed = set(role_options[key])
+
+    out: List[dict] = []
+    for name, sim in pairs:
+        if allowed is not None and name not in allowed:
+            continue
+        ddragon = DDRAGON_KEY_MAP.get(name, name)
+        img = (
+            f"https://ddragon.leagueoflegends.com/cdn/"
+            f"{DDRAGON_VERSION}/img/champion/{ddragon}.png"
+        )
+        out.append({
+            "name": name,
+            "similarity": sim,
+            "historical_wr": champ_win_rates.get(name),
+            "img": img,
+        })
+        if len(out) >= k:
+            break
+    return out
+
+
 # ---------- routes ----------
 
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
+
+
+@app.route("/similar")
+def similar_page():
+    return send_from_directory("static", "similar.html")
 
 
 @app.route("/api/champions")
@@ -192,13 +293,68 @@ def api_champions():
             f"https://ddragon.leagueoflegends.com/cdn/"
             f"{DDRAGON_VERSION}/img/champion/{ddragon_key}.png"
         )
+        # `roles` (strict, >=60%) drives recommender candidate pools.
+        # `roles_loose` (>=10%, data-format) drives the analysis page so
+        # secondary lanes like Akali Top can be inspected.
         data.append({
             "name": name,
             "id": ddragon_key,
             "img": img_url,
             "roles": champ_roles.get(name, []),
+            "roles_loose": champ_roles_loose.get(name, []),
         })
     return jsonify(data)
+
+
+@app.route("/api/similar")
+def api_similar():
+    """Cosine-similar champions using the same Champion2Vec embeddings as draft."""
+    champion = (request.args.get("champion") or "").strip()
+    if not champion:
+        return jsonify({"error": "missing champion"}), 400
+
+    k_req = request.args.get("k", type=int)
+    k = int(k_req) if k_req is not None else 8
+    k = max(1, min(k, 24))
+
+    role = (request.args.get("role") or "all").strip()
+    role_arg: Optional[str] = None
+    if role.lower() not in ("all", ""):
+        role_arg = role
+
+    neighbors = _cosine_neighbors(champion, k, role_arg)
+    if neighbors is None:
+        return jsonify({"error": f"unknown champion {champion!r}"}), 400
+
+    return jsonify({
+        "anchor": champion,
+        "role_filter": role if role else "all",
+        "neighbors": neighbors,
+        "count": len(neighbors),
+    })
+
+
+@app.route("/api/similar_pair")
+def api_similar_pair():
+    """Direct cosine similarity between two champions in Champion2Vec space."""
+    a = (request.args.get("a") or "").strip()
+    b = (request.args.get("b") or "").strip()
+    if not a or not b:
+        return jsonify({"error": "missing a or b"}), 400
+    if a not in embed_dict:
+        return jsonify({"error": f"unknown champion {a!r}"}), 400
+    if b not in embed_dict:
+        return jsonify({"error": f"unknown champion {b!r}"}), 400
+
+    va = embed_dict[a]
+    vb = embed_dict[b]
+    na = float(np.linalg.norm(va))
+    nb = float(np.linalg.norm(vb))
+    if na < 1e-12 or nb < 1e-12:
+        return jsonify({"a": a, "b": b, "cosine": 0.0})
+
+    cos = float(np.dot(va, vb) / (na * nb))
+    return jsonify({"a": a, "b": b, "cosine": cos})
 
 
 @app.route("/api/recommend", methods=["POST"])
@@ -339,22 +495,38 @@ def api_analysis():
         "roles": champ_role_stats.get(champ, {})
     }
     
-    # Calculate scores against all other champions
+    # Absolute MF prediction reconstructs the centered score deviation
+    # for each pair using bias terms (when present in the artifact):
+    #   pred(i, j) ~= mu + b_u[i] + b_v[j] + U[i] . V[j]
+    # which represents (i's score when j is on relevant team) - 50.
+    # We then average the two asymmetric directions and add 50 to land
+    # on a 0-100 readable score where 50 = neutral.
     synergy_data = []
     counter_data = []
-    
+
+    if HAS_BIASES:
+        bsu = embed_biases["b_syn_u"]; bsv = embed_biases["b_syn_v"]; mu_s = embed_biases["mu_syn"]
+        bmu = embed_biases["b_match_u"]; bmv = embed_biases["b_match_v"]; mu_m = embed_biases["mu_match"]
+    else:
+        bsu = bsv = bmu = bmv = {}; mu_s = mu_m = 0.0
+
     for champ_b, b in embed_dict.items():
         if champ == champ_b: continue
         u_syn_b, v_syn_b = b[0:16], b[16:32]
         u_match_b, v_match_b = b[32:48], b[48:64]
-        
-        # PATH A: Direct Score Prediction (Delta from 50.0)
-        syn_delta = float(np.dot(u_syn_a, v_syn_b) + np.dot(u_syn_b, v_syn_a))
-        a_counters_b_delta = float(np.dot(u_match_a, v_match_b) - np.dot(u_match_b, v_match_a))
-        
-        # Synergy is 50 + delta, but for the "Score" list we display the delta
-        synergy_data.append({"champion": champ_b, "score": syn_delta})
-        counter_data.append({"champion": champ_b, "score": a_counters_b_delta})
+
+        # Synergy: A's predicted score boost when B is ally, and reverse.
+        a_with_b = mu_s + bsu.get(champ, 0.0) + bsv.get(champ_b, 0.0) + float(np.dot(u_syn_a, v_syn_b))
+        b_with_a = mu_s + bsu.get(champ_b, 0.0) + bsv.get(champ, 0.0) + float(np.dot(u_syn_b, v_syn_a))
+        synergy_avg = (a_with_b + b_with_a) / 2.0
+        syn_score = max(0.0, min(100.0, 50.0 + synergy_avg))
+
+        # Matchup: A's predicted score against B (positive = A favored).
+        a_vs_b = mu_m + bmu.get(champ, 0.0) + bmv.get(champ_b, 0.0) + float(np.dot(u_match_a, v_match_b))
+        ctr_score = max(0.0, min(100.0, 50.0 + a_vs_b))
+
+        synergy_data.append({"champion": champ_b, "score": round(syn_score, 1)})
+        counter_data.append({"champion": champ_b, "score": round(ctr_score, 1)})
         
     # 1. Group Synergies by Role (Top 3 per role). Skip the query
     # champion's own primary role — same-role pairs can never be allies
@@ -385,23 +557,169 @@ def api_analysis():
         filtered_counters = counter_data
 
     filtered_counters.sort(key=lambda x: x["score"], reverse=True)
-    
+
     response["counters"] = filtered_counters[:5]
-    response["countered_by"] = [{"champion": c["champion"], "score": -c["score"]} for c in filtered_counters[-5:]][::-1]
-    
+    # For "countered_by", show "how strongly champion B counters A" by
+    # mirroring around 50: low matchup score → high counter strength.
+    response["countered_by"] = [
+        {"champion": c["champion"], "score": round(100.0 - c["score"], 1)}
+        for c in filtered_counters[-5:]
+    ][::-1]
+
     if compare and compare in embed_dict:
         syn_val = next(s["score"] for s in synergy_data if s["champion"] == compare)
         match_val = next(s["score"] for s in counter_data if s["champion"] == compare)
-        
-        # PATH A: We provide the absolute predicted synergy score (50 + delta)
-        # and the raw counter delta.
         response["comparison"] = {
             "champion": compare,
-            "synergy_score": round(50.0 + syn_val, 2), 
-            "matchup_score": round(match_val, 2),
-            "status": f"{champ} vs {compare}"
+            "synergy_score": syn_val,    # 0-100, 50 = neutral chemistry
+            "matchup_score": match_val,  # 0-100, 50 = even matchup, >50 = champ favored
+            "status": f"{champ} vs {compare}",
         }
         
+    return jsonify(response)
+
+
+@app.route("/api/role_analysis", methods=["GET"])
+def api_role_analysis():
+    """
+    Role-aware analysis. Each unit is (champion, role) so Akali-MID
+    has a different profile than Akali-TOP.
+
+    Query: /api/role_analysis?champ=Akali&role=MIDDLE
+    Optional: &compare=Ahri  (specific head-to-head; assumes same role
+              unless &compare_role=... is supplied).
+
+    Returns:
+        - same_lane_matchups: matchups vs every other (champ, role=role)
+            split into best (this champ favored) and worst (countered_by)
+        - same_lane_synergies: top allies in each *other* role
+        - comparison (if compare given)
+    """
+    if not role_embed_dict:
+        return jsonify({"error": "role-aware embedding not available"}), 503
+
+    champ = (request.args.get("champ") or "").strip()
+    role = (request.args.get("role") or "").strip().upper()
+    compare = (request.args.get("compare") or "").strip()
+    compare_role = (request.args.get("compare_role") or role).strip().upper()
+
+    if not champ or not role:
+        return jsonify({"error": "champ and role are required"}), 400
+
+    key = f"{champ}|{role}"
+    if key not in role_embed_dict:
+        return jsonify({
+            "error": f"no role-aware data for {champ} in {role}",
+            "hint": "champion may not have ≥10% pick share or ≥20 games in that role",
+        }), 404
+
+    a_vec = role_embed_dict[key]
+    u_syn_a, v_syn_a = a_vec[0:16], a_vec[16:32]
+    u_match_a, v_match_a = a_vec[32:48], a_vec[48:64]
+
+    # Bias dicts (default 0 if absent)
+    bsu = role_embed_biases.get("b_syn_u", {}) if role_embed_biases else {}
+    bsv = role_embed_biases.get("b_syn_v", {}) if role_embed_biases else {}
+    bmu = role_embed_biases.get("b_match_u", {}) if role_embed_biases else {}
+    bmv = role_embed_biases.get("b_match_v", {}) if role_embed_biases else {}
+    mu_s = role_embed_biases.get("mu_syn", 0.0) if role_embed_biases else 0.0
+    mu_m = role_embed_biases.get("mu_match", 0.0) if role_embed_biases else 0.0
+
+    same_lane = []
+    cross_lane_matchups = {r: [] for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]}
+    role_synergies = {r: [] for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]}
+
+    for k, b_vec in role_embed_dict.items():
+        if k == key:
+            continue
+        b_champ, b_role = k.split("|", 1)
+        u_syn_b, v_syn_b = b_vec[0:16], b_vec[16:32]
+        u_match_b, v_match_b = b_vec[32:48], b_vec[48:64]
+
+        # Both directions of the matchup. delta drives the win probability;
+        # each side's lane_score is shown as a sublabel so users can see the
+        # underlying signal.
+        a_vs_b = mu_m + bmu.get(key, 0.0) + bmv.get(k, 0.0) + float(np.dot(u_match_a, v_match_b))
+        b_vs_a = mu_m + bmu.get(k, 0.0) + bmv.get(key, 0.0) + float(np.dot(u_match_b, v_match_a))
+        delta = a_vs_b - b_vs_a
+        a_win_prob = float(1.0 / (1.0 + np.exp(-delta / 5.0)))
+
+        entry = {
+            "champion": b_champ,
+            "win_pct": round(a_win_prob * 100, 1),
+            "lane_score": round(50.0 + a_vs_b, 1),
+            "their_lane_score": round(50.0 + b_vs_a, 1),
+        }
+
+        if b_role == role:
+            same_lane.append(entry)
+        else:
+            cross_lane_matchups[b_role].append(entry)
+
+        # Synergy only with allies in *other* roles (you can't have two mids on one team)
+        if b_role != role:
+            a_with_b = mu_s + bsu.get(key, 0.0) + bsv.get(k, 0.0) + float(np.dot(u_syn_a, v_syn_b))
+            b_with_a = mu_s + bsu.get(k, 0.0) + bsv.get(key, 0.0) + float(np.dot(u_syn_b, v_syn_a))
+            syn_score = max(0.0, min(100.0, 50.0 + (a_with_b + b_with_a) / 2.0))
+            role_synergies[b_role].append({"champion": b_champ, "score": round(syn_score, 1)})
+
+    # Rank by win probability — the same metric the comparison panel uses.
+    same_lane.sort(key=lambda x: x["win_pct"], reverse=True)
+    for r in cross_lane_matchups:
+        cross_lane_matchups[r].sort(key=lambda x: x["win_pct"], reverse=True)
+    for r in role_synergies:
+        role_synergies[r].sort(key=lambda x: x["score"], reverse=True)
+        role_synergies[r] = role_synergies[r][:5]
+
+    response = {
+        "champion": champ,
+        "role": role,
+        "win_rate": champ_win_rates.get(champ, 50.0),
+        "roles": champ_role_stats.get(champ, {}),
+        "playable_roles": champ_roles_loose.get(champ, []),
+        # Top 5 enemies the queried champion wins most against in this lane,
+        # and the 5 they lose to most. `win_pct` is Akali's predicted win %
+        # vs that enemy (sigmoid of lane-score delta), identical to what the
+        # comparison panel shows.
+        "same_lane_best": same_lane[:5],
+        "same_lane_worst": same_lane[-5:][::-1],
+        "cross_lane_matchups": {r: lst[:5] for r, lst in cross_lane_matchups.items()},
+        "role_synergies": role_synergies,
+    }
+
+    if compare:
+        ckey = f"{compare}|{compare_role}"
+        if ckey in role_embed_dict:
+            b = role_embed_dict[ckey]
+            u_match_b, v_match_b = b[32:48], b[48:64]
+            u_syn_b, v_syn_b = b[0:16], b[16:32]
+            a_vs_b = mu_m + bmu.get(key, 0.0) + bmv.get(ckey, 0.0) + float(np.dot(u_match_a, v_match_b))
+            b_vs_a = mu_m + bmu.get(ckey, 0.0) + bmv.get(key, 0.0) + float(np.dot(u_match_b, v_match_a))
+
+            # Score deltas → win probability via sigmoid. The MF predicts
+            # champ_score deviation from the 50-baseline, where champ_score
+            # is dominated by the +3 win bonus. So a 5-point spread roughly
+            # corresponds to a strong-favorite matchup; we use k=5 to map
+            # delta=±5 → ~73%/27%, delta=±2 → ~60%/40%, delta=0 → 50%.
+            delta = a_vs_b - b_vs_a
+            a_win_prob = float(1.0 / (1.0 + np.exp(-delta / 5.0)))
+
+            response["comparison"] = {
+                "vs": compare,
+                "vs_role": compare_role,
+                "matchup_score": round(max(0.0, min(100.0, 50.0 + a_vs_b)), 1),
+                "their_matchup_score": round(max(0.0, min(100.0, 50.0 + b_vs_a)), 1),
+                "win_pct": round(a_win_prob * 100, 1),
+                "their_win_pct": round((1.0 - a_win_prob) * 100, 1),
+            }
+            if compare_role != role:
+                a_with_b = mu_s + bsu.get(key, 0.0) + bsv.get(ckey, 0.0) + float(np.dot(u_syn_a, v_syn_b))
+                b_with_a = mu_s + bsu.get(ckey, 0.0) + bsv.get(key, 0.0) + float(np.dot(u_syn_b, v_syn_a))
+                response["comparison"]["synergy_score"] = round(
+                    max(0.0, min(100.0, 50.0 + (a_with_b + b_with_a) / 2.0)), 1)
+        else:
+            response["comparison_error"] = f"no data for {compare} in {compare_role}"
+
     return jsonify(response)
 
 
