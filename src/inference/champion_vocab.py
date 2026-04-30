@@ -37,7 +37,7 @@ def load_champion_vocab(project_root: Path) -> Tuple[Dict[str, int], Dict[int, s
 def load_role_champion_options(
     project_root: Path,
     min_games_for_role: int = 20,
-    min_role_share: float = 0.10,
+    min_role_share: float = 0.05,
 ) -> Dict[str, List[str]]:
     """
     Build role-specific champion options from historical position counts.

@@ -22,8 +22,17 @@ class _StubAdapter:
 
 
 def _stub_model(score_fn):
+    """Stub the classifier interface used by recommend_hybrid.
+
+    Returns a MagicMock whose predict_proba(X) yields [[1-p, p], ...] where p is
+    score_fn(row) / 100 — so multiplying back by 100 (as the recommender does)
+    recovers the original score, keeping the existing 0-100-scale tests working.
+    """
     m = MagicMock()
-    m.predict = MagicMock(side_effect=lambda X: np.array([score_fn(row) for row in X]))
+    m.predict_proba = MagicMock(
+        side_effect=lambda X: np.array([[1.0 - score_fn(row) / 100.0,
+                                          score_fn(row) / 100.0] for row in X])
+    )
     return m
 
 

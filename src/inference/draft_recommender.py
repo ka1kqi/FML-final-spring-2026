@@ -40,16 +40,16 @@ def recommend_at_step(
         step: current step index (0-9)
         blue_picks: list of 5 slots, None for unfilled
         red_picks: list of 5 slots, None for unfilled
-        model: trained HistGradientBoostingRegressor
+        model: trained HistGradientBoostingClassifier
         embed_dict: champion name -> embedding vector
-        champ_scores: champion name -> average comp score
+        champ_scores: champion name -> historical avg comp score (feature)
         candidate_pool: list of valid champion names for this slot
                        (e.g. filtered by role). If None, uses all champions.
         banned: list of banned champion names to exclude
         top_k: number of recommendations to return
 
     Returns:
-        List of (champion_name, win_probability) sorted descending
+        List of (champion_name, win_prob in [0,1]) sorted descending.
     """
     if step < 0 or step >= len(DRAFT_ORDER):
         return []
@@ -81,9 +81,9 @@ def recommend_at_step(
         features = build_candidate_features(
             champ, allies, enemies, embed_dict, champ_scores
         )
-        score = model.predict(features.reshape(1, -1))[0]
+        win_prob = model.predict_proba(features.reshape(1, -1))[0, 1]
 
-        scored.append((champ, float(score)))
+        scored.append((champ, float(win_prob)))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_k]
@@ -183,27 +183,37 @@ def load_draft_resources(models_dir: Path):
     """
     Load all resources needed for draft recommendations.
 
-    Args:
-        models_dir: path to data/processed/draft_models/
-
     Returns:
-        (model, embed_dict, champ_scores) tuple
+        (model, embed_dict, champ_scores, biases) tuple
+        `biases` is a dict with keys
+            mu_syn, b_syn_u, b_syn_v, mu_match, b_match_u, b_match_v
+        each indexed by champion name. Empty dict if the artifact was
+        produced by an older training run that doesn't ship biases.
     """
     from src.models.draft_classifier import load_draft_model
 
     model = load_draft_model(models_dir / "draft_model.joblib")
 
-    # Load embeddings
     data = np.load(str(models_dir / "champion2vec.npz"), allow_pickle=True)
     embed_weights = data["weights"]
-    vocab = data["vocab"].tolist()  # list of champion names
+    vocab = data["vocab"].tolist()
     embed_dict = {name: embed_weights[i] for i, name in enumerate(vocab)}
 
-    # Load champ scores
+    biases: dict = {}
+    if "b_syn_u" in data.files:
+        biases = {
+            "mu_syn": float(data["mu_syn"]),
+            "mu_match": float(data["mu_match"]),
+            "b_syn_u": {n: float(data["b_syn_u"][i]) for i, n in enumerate(vocab)},
+            "b_syn_v": {n: float(data["b_syn_v"][i]) for i, n in enumerate(vocab)},
+            "b_match_u": {n: float(data["b_match_u"][i]) for i, n in enumerate(vocab)},
+            "b_match_v": {n: float(data["b_match_v"][i]) for i, n in enumerate(vocab)},
+        }
+
     with open(models_dir / "champ_scores.json", "r") as f:
         champ_scores = json.load(f)
 
-    return model, embed_dict, champ_scores
+    return model, embed_dict, champ_scores, biases
 
 
 # ============================================================================
@@ -283,12 +293,15 @@ def recommend_hybrid(
     if not pool:
         return []
 
-    # 2. Score them all
+    # 2. Score them all. The trained model is a HistGradientBoostingClassifier
+    # whose predict_proba()[:, 1] is the win probability in [0, 1]. We multiply
+    # by 100 to keep the existing 0-100 "score" scale so downstream display and
+    # the legacy heuristic formula behave the same as before.
     feats = np.stack([
         build_candidate_features(c, allies, enemies, embed_dict, champ_scores)
         for c in pool
     ])
-    perf_scores = model.predict(feats)
+    perf_scores = model.predict_proba(feats)[:, 1] * 100.0
 
     # 3. Take top-N for rerank
     order = np.argsort(perf_scores)[::-1][:rerank_top_n]

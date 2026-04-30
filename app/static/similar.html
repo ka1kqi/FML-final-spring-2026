@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Champion Similarity — LoL Draft</title>
+  <meta name="description" content="Nearest neighbors in Champion2Vec space — pivot pool substitutes by role">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="page-similar">
+  <div class="nav-tabs">
+    <a href="/" class="nav-tab nav-tab-link">DRAFT SIMULATOR</a>
+    <a href="/" class="nav-tab nav-tab-link">CHAMPION ANALYSIS</a>
+    <span class="nav-tab active">CHAMPION SIMILARITY</span>
+  </div>
+
+  <div class="analysis-dashboard similar-dashboard">
+    <!-- Left Panel: Anchor Overview -->
+    <div class="analysis-panel left">
+      <div class="analysis-header">Pivot Pool</div>
+
+      <div class="analysis-search">
+        <input
+          type="text"
+          id="similar-search-anchor"
+          placeholder="Search champion..."
+          onfocus="showSimilarGridDropdown()"
+          oninput="filterSimilarGridDropdown(this.value)"
+          autocomplete="off"
+        >
+        <div id="similar-grid-anchor" class="analysis-grid-dropdown hidden"></div>
+      </div>
+
+      <div class="analysis-card main-champ similar-anchor-card">
+        <div class="main-champ-header">
+          <div id="similar-wr-badge" class="wr-badge hidden">WR</div>
+          <img id="similar-anchor-img" src="" alt="" class="hidden">
+          <h2 id="similar-anchor-name" class="similar-anchor-name">Select a champion</h2>
+          <div class="analysis-role-selector">
+            <button class="role-mini-btn active" onclick="setSimilarRole('all')" title="All">All</button>
+            <button class="role-mini-btn" onclick="setSimilarRole('Top')" title="Top">T</button>
+            <button class="role-mini-btn" onclick="setSimilarRole('Jungle')" title="Jungle">J</button>
+            <button class="role-mini-btn" onclick="setSimilarRole('Mid')" title="Mid">M</button>
+            <button class="role-mini-btn" onclick="setSimilarRole('ADC')" title="ADC">A</button>
+            <button class="role-mini-btn" onclick="setSimilarRole('Support')" title="Support">S</button>
+          </div>
+        </div>
+
+        <div class="analysis-roles">
+          <h3>Role Buckets</h3>
+          <div id="similar-anchor-roles" class="similar-role-chips"></div>
+        </div>
+
+        <div class="analysis-roles" style="margin-top: 18px;">
+          <h3>How to use</h3>
+          <div class="similar-help">
+            Click a neighbor to pivot your anchor. Role filter limits the pool to that lane’s eligible champions (not counter/partner logic).
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Panel: Nearest Neighbors -->
+    <div class="analysis-panel center">
+      <div class="analysis-header">
+        Nearest Neighbors
+        <div class="similar-header-controls">
+          <span class="similar-k-label">RESULTS</span>
+          <select class="similar-k-select" id="similar-k" aria-label="Number of results">
+            <option value="8" selected>8</option>
+            <option value="12">12</option>
+            <option value="16">16</option>
+            <option value="24">24</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="analysis-content-scroll">
+        <div class="analysis-search similar-compare-search">
+          <input
+            type="text"
+            id="similar-search-compare"
+            placeholder="Compare with..."
+            onfocus="showSimilarCompareDropdown()"
+            oninput="filterSimilarCompareDropdown(this.value)"
+            autocomplete="off"
+          >
+          <div id="similar-grid-compare" class="analysis-grid-dropdown hidden"></div>
+        </div>
+
+        <div id="similar-compare-empty" class="similar-compare-empty">
+          <div class="similar-compare-empty-title">Compare (optional)</div>
+          <div class="similar-compare-empty-desc">
+            Pick a compare champ to see direct cosine + shared role buckets. Quick picks:
+          </div>
+          <div id="similar-compare-suggestions" class="similar-compare-suggestions"></div>
+        </div>
+
+        <div id="similar-compare-content" class="hidden">
+          <div class="verdict-container">
+            <div id="similar-compare-title" class="verdict-text">Embedding Relationship</div>
+            <div id="similar-compare-desc" class="verdict-desc">Computing cosine similarity in Champion2Vec space…</div>
+          </div>
+
+          <div class="comparison-card">
+            <div class="comparison-visual">
+              <img id="similar-compare-anchor-img" src="" alt="">
+              <div class="vs-text">VS</div>
+              <img id="similar-compare-other-img" src="" alt="">
+            </div>
+            <div id="similar-compare-status" class="comparison-status">Cosine similarity</div>
+            <div class="comparison-details">
+              <div class="detail-row">
+                <span>Cosine:</span>
+                <span id="similar-compare-cos">0.0000</span>
+              </div>
+              <div class="detail-row">
+                <span>Rank (anchor):</span>
+                <span id="similar-compare-rank">—</span>
+              </div>
+            </div>
+            <div class="similar-compare-roles">
+              <div class="similar-compare-roles-label">Shared role buckets</div>
+              <div id="similar-compare-shared" class="similar-role-chips"></div>
+            </div>
+            <button type="button" class="similar-clear-compare" id="similar-clear-compare">Clear compare</button>
+          </div>
+        </div>
+
+        <div id="similar-message" class="analysis-empty">Choose a champion to see nearest neighbors.</div>
+        <div id="similar-error" class="similar-error hidden"></div>
+        <div id="similar-loading" class="similar-loading hidden">Loading pivot pool…</div>
+        <div class="similar-grid" id="similar-grid" aria-live="polite"></div>
+      </div>
+    </div>
+
+    <!-- Right Panel: Quick Role Slices -->
+    <div class="analysis-panel right">
+      <div class="analysis-header">Closest by Role</div>
+      <div class="analysis-content-scroll">
+        <div id="similar-role-slices-empty" class="analysis-empty">
+          Pick an anchor to populate role slices
+        </div>
+
+        <div id="similar-role-slices" class="hidden">
+          <div class="meta-list-group">
+            <h3>Top</h3>
+            <div id="slice-Top"></div>
+          </div>
+          <div class="meta-list-group">
+            <h3>Jungle</h3>
+            <div id="slice-Jungle"></div>
+          </div>
+          <div class="meta-list-group">
+            <h3>Mid</h3>
+            <div id="slice-Mid"></div>
+          </div>
+          <div class="meta-list-group">
+            <h3>ADC</h3>
+            <div id="slice-ADC"></div>
+          </div>
+          <div class="meta-list-group">
+            <h3>Support</h3>
+            <div id="slice-Support"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/similar.js"></script>
+</body>
+</html>

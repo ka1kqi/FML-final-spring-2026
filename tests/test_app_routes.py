@@ -74,5 +74,7 @@ def test_evaluate_returns_prob_source(client):
     assert "red_score" in data
     # new fields
     assert "prob_source" in data
-    assert data["prob_source"] in {"wide_deep", "score_heuristic_fallback"}
+    assert data["prob_source"] in {
+        "wide_deep", "match_classifier", "heuristic", "score_heuristic_fallback"
+    }
     assert "model_version" in data
