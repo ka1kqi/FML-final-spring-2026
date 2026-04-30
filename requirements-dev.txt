@@ -1,0 +1,9 @@
+xgboost
+lightgbm
+streamlit
+matplotlib
+seaborn
+riotwatcher
+tqdm
+pyyaml
+pytest

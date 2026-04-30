@@ -1,0 +1,29 @@
+{
+  "project_version": "draft_role_swap_hybrid_v1",
+  "demo_retraining_required": false,
+  "models": {
+    "champion2vec": {
+      "type": "custom pure-NumPy matrix factorization",
+      "purpose": "learn champion embeddings from synergy and matchup matrices",
+      "artifact": "champion2vec.npz"
+    },
+    "performance_regressor": {
+      "type": "HistGradientBoostingRegressor",
+      "purpose": "predict candidate champion performance score",
+      "artifact": "draft_model.joblib"
+    },
+    "wide_deep": {
+      "type": "Wide & Deep neural network",
+      "purpose": "predict blue-side win probability from draft composition",
+      "artifact": "wide_deep.pt"
+    }
+  },
+  "api_contract": {
+    "backward_compatible": true,
+    "unchanged_endpoints": [
+      "/api/champions",
+      "/api/recommend",
+      "/api/evaluate"
+    ]
+  }
+}

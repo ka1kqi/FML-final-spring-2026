@@ -11,4 +11,9 @@ data/processed/*.csv
 .DS_Store
 notebooks/.ipynb_checkpoints/
 *.csv
-*.csv
+
+# python tests
+.pytest_cache/
+
+# trained artifacts (large; produced by training scripts, not committed)
+data/processed/draft_models/wide_deep.pt
