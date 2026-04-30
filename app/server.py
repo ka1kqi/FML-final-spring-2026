@@ -24,8 +24,10 @@ from src.inference.draft_recommender import (
     DRAFT_ORDER,
 )
 from src.features.synergy_features import build_candidate_features
+from src.models.match_classifier import build_match_features, load_match_model
 import numpy as np
 import pandas as pd
+from typing import List, Set, Dict
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
@@ -38,6 +40,11 @@ role_options = load_role_champion_options(
     PROJECT_ROOT, min_games_for_role=50, min_role_share=0.6,
 )
 draft_model, embed_dict, champ_scores = load_draft_resources(DRAFT_MODELS_DIR)
+
+match_model_path = DRAFT_MODELS_DIR / "match_model.joblib"
+match_model = load_match_model(match_model_path) if match_model_path.exists() else None
+if match_model is None:
+    print("WARNING: match_model.joblib not found — /api/evaluate will fall back to per-pick averaging")
 
 # Build a champion -> list-of-roles mapping for the frontend
 champ_roles: dict[str, list[str]] = {}
@@ -53,20 +60,104 @@ champ_role_stats: dict[str, dict[str, float]] = {}
 champ_win_rates: dict[str, float] = {}
 lane_pools: dict[str, list[str]] = {r: [] for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]}
 
+# Per-role play counts -> pick_rate + log-z popularity bonus used to re-rank recs.
+role_pick_counts: dict[str, dict[str, int]] = {r: {} for r in lane_pools}
+for (champ, role), grp in comp_df.groupby(["champion_name", "position"]):
+    if role in role_pick_counts:
+        role_pick_counts[role][champ] = int(len(grp))
+
+role_pick_rate: dict[str, dict[str, float]] = {r: {} for r in lane_pools}
+role_pop_bonus: dict[str, dict[str, float]] = {r: {} for r in lane_pools}
+for r, counts in role_pick_counts.items():
+    if not counts:
+        continue
+    total = sum(counts.values())
+    logs = {c: np.log(n) for c, n in counts.items()}
+    mean = float(np.mean(list(logs.values())))
+    std = float(np.std(list(logs.values()))) or 1e-6
+    for c, n in counts.items():
+        role_pick_rate[r][c] = n / total
+        role_pop_bonus[r][c] = (logs[c] - mean) / std
+
 for champ, group in comp_df.groupby("champion_name"):
-    # Role Dist
     role_counts = group["position"].value_counts(normalize=True)
     champ_role_stats[champ] = {role: round(pct * 100, 1) for role, pct in role_counts.items()}
-    
-    # Win Rate
     champ_win_rates[champ] = round(group["win"].mean() * 100, 2)
-    
-    # Lane Pool (10% threshold)
     for role, pct in role_counts.items():
         if pct >= 0.10:
             lane_pools[role].append(champ)
 
-print("Stats and Lane Pools calculated.")
+print("Stats, Lane Pools, and popularity bonuses calculated.")
+
+# Build champ_can_play map for role-coverage validation
+# Maps champion -> set of roles they've been played in (≥20 games)
+champ_can_play: Dict[str, Set[str]] = {}
+role_game_counts: Dict[str, Dict[str, int]] = {r: {} for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]}
+
+for (champ, role), grp in comp_df.groupby(["champion_name", "position"]):
+    count = len(grp)
+    if role in role_game_counts:
+        role_game_counts[role][champ] = count
+        if count >= 20:  # threshold for role validity
+            champ_can_play.setdefault(champ, set()).add(role)
+
+# Fill in any champions without explicit role data (make them available in all roles for graceful degradation)
+for champ in champion_list:
+    if champ not in champ_can_play:
+        champ_can_play[champ] = set()  # champion has no role coverage
+
+print(f"Role-coverage validation ready ({len([c for c in champ_can_play.values() if c])} champs with role data)")
+
+# App role label -> data role enum used by all stats above.
+APP_TO_DATA_ROLE = {"Top": "TOP", "Jungle": "JUNGLE", "Mid": "MIDDLE",
+                    "ADC": "BOTTOM", "Support": "UTILITY"}
+
+# Popularity blend in logit space. Held conservative because the
+# per-pick model's raw prob is concentrated near 0.5 — too strong a
+# weight here makes popularity dominate ranking. +2-sigma → +0.3 logit
+# → ~+7% pp lift from a 50% baseline.
+POPULARITY_WEIGHT_LOGIT = 0.15
+
+
+def _logit(p: float, eps: float = 1e-6) -> float:
+    p = min(max(p, eps), 1 - eps)
+    return float(np.log(p / (1 - p)))
+
+
+def _sigmoid(x: float) -> float:
+    return float(1.0 / (1.0 + np.exp(-x)))
+
+
+def _can_assign_roles(team_champs: List[str], roles: List[str],
+                      champ_can_play: Dict[str, Set[str]]) -> bool:
+    """
+    Bipartite matching: can we assign each champion to a distinct role?
+
+    Uses permutation-based search for exact solution. If any champion
+    cannot play any role, returns False immediately.
+    """
+    if len(team_champs) != len(roles):
+        return False
+
+    # Quick check: can each champion play at least one of the roles?
+    for champ in team_champs:
+        available_roles = champ_can_play.get(champ, set())
+        if not available_roles:
+            return False  # Champion has no role data
+
+    # Try to find a valid assignment using permutations
+    from itertools import permutations
+    for role_perm in permutations(roles):
+        valid = True
+        for champ, role in zip(team_champs, role_perm):
+            available_roles = champ_can_play.get(champ, set())
+            if role not in available_roles:
+                valid = False
+                break
+        if valid:
+            return True
+
+    return False
 
 # DDragon name overrides (dataset name -> DDragon key)
 DDRAGON_KEY_MAP = {
@@ -149,19 +240,24 @@ def api_recommend():
         top_k=50,
     )
 
+    data_role = APP_TO_DATA_ROLE.get(role_filter)
+
     recommendations = []
-    for name, score in recs:
-        # Direct 1:1 map: score 52.5 -> 0.525 win prob
-        win_prob = 0.50 + (score - 50.0) * 0.01
-        win_prob = max(0.0, min(1.0, win_prob))
-        
+    for name, win_prob_raw in recs:
+        pop_bonus = role_pop_bonus.get(data_role, {}).get(name, 0.0) if data_role else 0.0
+        pick_rate = role_pick_rate.get(data_role, {}).get(name, 0.0) if data_role else 0.0
+
+        # Blend in logit space: keeps probabilities calibrated.
+        win_prob = _sigmoid(_logit(win_prob_raw) + POPULARITY_WEIGHT_LOGIT * pop_bonus)
+
         recommendations.append({
             "champion": name,
-            "score": round(score, 1),
-            "win_prob": round(win_prob, 4)
+            "score": round(win_prob * 100, 1),
+            "score_raw": round(win_prob_raw * 100, 1),
+            "pick_rate": round(pick_rate * 100, 1),
+            "win_prob": round(win_prob, 4),
         })
 
-    # Re-sort recommendations by amplified score just to be safe
     recommendations.sort(key=lambda x: x["score"], reverse=True)
 
     return jsonify({
@@ -187,31 +283,40 @@ def api_evaluate():
             "red_win_prob": 0.5
         })
 
-    # Evaluate the composition by taking the average predicted score
-    # of the model evaluating each of the 5 Blue champions in context.
-    blue_scores = []
-    for i, candidate in enumerate(blue_picks):
-        allies = [p for j, p in enumerate(blue_picks) if j != i]
-        enemies = red_picks
-        features = build_candidate_features(
-            candidate, allies, enemies, embed_dict, champ_scores
-        )
-        score = draft_model.predict(features.reshape(1, -1))[0]
-        blue_scores.append(float(score))
+    # Check role coverage for both teams
+    ROLES = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+    blue_roles_valid = _can_assign_roles(blue_picks, ROLES, champ_can_play)
+    red_roles_valid = _can_assign_roles(red_picks, ROLES, champ_can_play)
 
-    avg_blue_score = sum(blue_scores) / len(blue_scores)
-    
-    # Since the score centers around 50 for an average match, red's score is roughly mirrored
-    avg_red_score = 100.0 - avg_blue_score
+    if match_model is not None:
+        # Per-match aggregate classifier — proper calibrated win probability.
+        feats = build_match_features(blue_picks, red_picks, embed_dict, champ_scores)
+        blue_logit = _logit(float(match_model.predict_proba(feats.reshape(1, -1))[0, 1]))
+    else:
+        # Fallback: average leave-one-out P(win) on the per-pick model.
+        probs = []
+        for i, candidate in enumerate(blue_picks):
+            allies = [p for j, p in enumerate(blue_picks) if j != i]
+            features = build_candidate_features(candidate, allies, red_picks, embed_dict, champ_scores)
+            probs.append(float(draft_model.predict_proba(features.reshape(1, -1))[0, 1]))
+        blue_logit = _logit(sum(probs) / len(probs))
 
-    blue_win_prob = max(0.0, min(1.0, 0.50 + (avg_blue_score - 50.0) * 0.01))
+    # Apply role-coverage penalty: -1.0 logit ≈ -26pp from 50%
+    ROLE_COVERAGE_PENALTY = 1.0
+
+    if not blue_roles_valid:
+        blue_logit -= ROLE_COVERAGE_PENALTY
+    if not red_roles_valid:
+        blue_logit += ROLE_COVERAGE_PENALTY
+
+    blue_win_prob = _sigmoid(blue_logit)
     red_win_prob = 1.0 - blue_win_prob
 
     return jsonify({
-        "blue_score": round(avg_blue_score, 1),
-        "blue_win_prob": blue_win_prob,
-        "red_score": round(avg_red_score, 1),
-        "red_win_prob": red_win_prob
+        "blue_score": round(blue_win_prob * 100, 1),
+        "blue_win_prob": round(blue_win_prob, 4),
+        "red_score": round(red_win_prob * 100, 1),
+        "red_win_prob": round(red_win_prob, 4),
     })
 
 
@@ -243,23 +348,34 @@ def api_analysis():
         u_syn_b, v_syn_b = b[0:16], b[16:32]
         u_match_b, v_match_b = b[32:48], b[48:64]
         
-        syn = float(np.dot(u_syn_a, v_syn_b) + np.dot(u_syn_b, v_syn_a))
-        a_counters_b = float(np.dot(u_match_a, v_match_b) - np.dot(u_match_b, v_match_a))
+        # PATH A: Direct Score Prediction (Delta from 50.0)
+        syn_delta = float(np.dot(u_syn_a, v_syn_b) + np.dot(u_syn_b, v_syn_a))
+        a_counters_b_delta = float(np.dot(u_match_a, v_match_b) - np.dot(u_match_b, v_match_a))
         
-        synergy_data.append({"champion": champ_b, "score": syn})
-        counter_data.append({"champion": champ_b, "score": a_counters_b})
+        # Synergy is 50 + delta, but for the "Score" list we display the delta
+        synergy_data.append({"champion": champ_b, "score": syn_delta})
+        counter_data.append({"champion": champ_b, "score": a_counters_b_delta})
         
-    # 1. Group Synergies by Role (Top 3 for each other role)
+    # 1. Group Synergies by Role (Top 3 per role). Skip the query
+    # champion's own primary role — same-role pairs can never be allies
+    # in a real draft, and the MF prediction for them is contaminated
+    # by role-archetype similarity rather than actual synergy.
     roles_order = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+    query_roles = champ_role_stats.get(champ, {})
+    query_primary_role = max(query_roles.items(), key=lambda x: x[1])[0] if query_roles else None
+
     role_synergies = {}
     for r in roles_order:
-        # Filter synergy_data to champs in this role pool
+        if r == query_primary_role:
+            role_synergies[r] = []
+            continue
         pool = lane_pools.get(r, [])
         r_synergies = [s for s in synergy_data if s["champion"] in pool]
         r_synergies.sort(key=lambda x: x["score"], reverse=True)
         role_synergies[r] = r_synergies[:3]
-    
+
     response["role_synergies"] = role_synergies
+    response["primary_role"] = query_primary_role
     
     # 2. Filter Counters by Lane (if role selected)
     if selected_role and selected_role in lane_pools:
@@ -277,10 +393,12 @@ def api_analysis():
         syn_val = next(s["score"] for s in synergy_data if s["champion"] == compare)
         match_val = next(s["score"] for s in counter_data if s["champion"] == compare)
         
+        # PATH A: We provide the absolute predicted synergy score (50 + delta)
+        # and the raw counter delta.
         response["comparison"] = {
             "champion": compare,
-            "synergy_score": round(syn_val, 4),
-            "matchup_score": round(match_val, 4),
+            "synergy_score": round(50.0 + syn_val, 2), 
+            "matchup_score": round(match_val, 2),
             "status": f"{champ} vs {compare}"
         }
         

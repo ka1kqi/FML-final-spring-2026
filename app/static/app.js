@@ -476,9 +476,9 @@ function renderRecommendations() {
     info.appendChild(name);
 
     const prob = document.createElement("div");
-    const pct = (rec.win_prob * 100).toFixed(1);
-    const score = rec.score.toFixed(1);
-    prob.innerHTML = `<span style="font-size: 10px; color: var(--text-dim);">S: ${score}</span> &nbsp;${pct}%`;
+    const fit = rec.score.toFixed(1);
+    const pickRate = (rec.pick_rate ?? 0).toFixed(1);
+    prob.innerHTML = `<span style="font-size: 10px; color: var(--text-dim);">PICK ${pickRate}%</span> &nbsp;<span title="Blended pick score (model + popularity), 50 = even">FIT ${fit}</span>`;
     prob.className = "rec-card-prob";
     if (rec.win_prob >= 0.52) prob.classList.add("high");
     else if (rec.win_prob >= 0.48) prob.classList.add("mid");
@@ -787,21 +787,21 @@ function renderAnalysis(data) {
       descEl.textContent = "Standard interaction level. No significant mathematical advantage or disadvantage detected.";
     }
 
-    // Gauges
+    // Gauges (Path A scaling)
     const details = document.querySelector(".comparison-details");
     details.innerHTML = `
       <div class="gauge-item">
-        <div class="gauge-label">Synergy Strength</div>
-        <div class="gauge-value">${(syn * 10).toFixed(1)}</div>
+        <div class="gauge-label">Predicted Synergy</div>
+        <div class="gauge-value">${syn.toFixed(1)}</div>
         <div class="gauge-bar-bg">
-          <div class="gauge-bar-fill synergy" style="width: ${Math.min(100, syn * 400)}%"></div>
+          <div class="gauge-bar-fill synergy" style="width: ${Math.min(100, Math.max(0, (syn - 45) * 10))}%"></div>
         </div>
       </div>
       <div class="gauge-item">
-        <div class="gauge-label">Counter Threat</div>
-        <div class="gauge-value">${(match * 10).toFixed(1)}</div>
+        <div class="gauge-label">Lane Threat</div>
+        <div class="gauge-value">${match.toFixed(1)}</div>
         <div class="gauge-bar-bg">
-          <div class="gauge-bar-fill matchup" style="width: ${Math.min(100, Math.abs(match) * 600)}%"></div>
+          <div class="gauge-bar-fill matchup" style="width: ${Math.min(100, Math.abs(match) * 15)}%"></div>
         </div>
       </div>
     `;

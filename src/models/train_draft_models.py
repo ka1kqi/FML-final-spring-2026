@@ -21,10 +21,17 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from src.models.train_embeddings import train_champion2vec, most_similar
+from src.models.train_embeddings import (
+    train_champion2vec, most_similar, top_synergies, top_counters,
+    compute_primary_roles,
+)
 from src.features.synergy_features import compute_champion_scores
 from src.models.draft_classifier import (
     build_training_data, train_draft_model, evaluate_model, save_draft_model,
+)
+from src.models.match_classifier import (
+    build_match_training_data, train_match_classifier, evaluate_match_model,
+    save_match_model,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -45,16 +52,21 @@ def main():
     comp_df = pd.read_csv(comp_file)
     print(f"  Loaded {len(comp_df)} rows, {comp_df['match_id'].nunique()} matches")
     
-    # --- Step 1.5: Temporal Split (Phase 1) ---
-    print("\n[1.5/6] Splitting data chronologically by patch (Train: 16.1-16.6, Test: 16.7+)...")
-    comp_df['patch_minor'] = comp_df['patch'].apply(lambda x: int(str(x).split('.')[1]))
-    
-    train_df = comp_df[comp_df['patch_minor'] <= 6].copy()
-    test_df = comp_df[comp_df['patch_minor'] >= 7].copy()
-    
-    train_matches = train_df['match_id'].nunique()
-    test_matches = test_df['match_id'].nunique()
-    print(f"  Train matches: {train_matches} | Test matches: {test_matches}")
+    # --- Step 1.5: Random match-level 80/20 split ---
+    # We're modeling the *current meta* (composition strength given today's
+    # game state), not forecasting future patches. Random split is the right
+    # eval frame: train and val both reflect the same population of metas.
+    print("\n[1.5/6] Random 80/20 split by match_id (current-meta evaluation)...")
+    rng = np.random.default_rng(42)
+    all_match_ids = comp_df["match_id"].unique()
+    rng.shuffle(all_match_ids)
+    n_train = int(0.8 * len(all_match_ids))
+    train_ids = set(all_match_ids[:n_train])
+    val_ids = set(all_match_ids[n_train:])
+
+    train_df = comp_df[comp_df["match_id"].isin(train_ids)].copy()
+    test_df = comp_df[comp_df["match_id"].isin(val_ids)].copy()
+    print(f"  Train matches: {train_df['match_id'].nunique()} | Val matches: {test_df['match_id'].nunique()}")
 
     # --- Step 2: Train Champion2Vec from scratch ---
     print("\n[2/6] Training Champion2Vec embeddings from scratch on training data...")
@@ -62,12 +74,28 @@ def main():
     print(f"  Trained embeddings for {len(embed_dict)} champions")
 
     # Embedding quality check
-    print("\n  Embedding quality check:")
+    print("\n  Archetype neighbors (cosine over full embedding):")
     for champ in ["Yasuo", "Jinx", "Thresh", "LeeSin"]:
         if champ in embed_dict:
             sims = most_similar(champ, embed_dict, top_k=3)
             sim_str = ", ".join(f"{n} ({s:.3f})" for n, s in sims)
             print(f"    {champ}: {sim_str}")
+
+    primary_role = compute_primary_roles(train_df)
+
+    print("\n  Top synergy allies (U_syn[c] . V_syn[ally], same-role filtered):")
+    for champ in ["Yasuo", "Jinx", "Thresh", "LeeSin"]:
+        if champ in embed_dict:
+            syns = top_synergies(champ, embed_dict, top_k=3, primary_role=primary_role)
+            syn_str = ", ".join(f"{n} ({s:+.2f})" for n, s in syns)
+            print(f"    {champ} ({primary_role.get(champ,'?')}): {syn_str}")
+
+    print("\n  Top counters (U_match[c] . V_match[enemy]):")
+    for champ in ["Yasuo", "Jinx", "Thresh", "LeeSin"]:
+        if champ in embed_dict:
+            ctrs = top_counters(champ, embed_dict, top_k=3)
+            ctr_str = ", ".join(f"{n} ({s:+.2f})" for n, s in ctrs)
+            print(f"    {champ}: {ctr_str}")
 
     # --- Step 3: Compute champion scores ---
     print("\n[3/6] Computing champion average scores on training data...")
@@ -86,20 +114,42 @@ def main():
     X_test, y_test = build_training_data(test_df, embed_dict, champ_scores)
     print(f"  Test Samples: {len(y_test)} | Features: {X_test.shape[1]}")
 
-    # --- Step 5: Train HistGradientBoostingRegressor ---
-    print("\n[5/6] Training HistGradientBoostingRegressor draft classifier...")
+    # --- Step 5: Train HistGradientBoostingClassifier ---
+    print("\n[5/6] Training HistGradientBoostingClassifier on win/loss...")
+    print(f"  Train base rate (P(win)): {y_train.mean():.4f}")
     lgb_model = train_draft_model(X_train, y_train, X_val=X_test, y_val=y_test)
 
     # --- Step 6: Evaluate ---
     print("\n[6/6] Evaluating...")
     metrics = evaluate_model(lgb_model, X_test, y_test)
-    print(f"  RMSE:      {metrics['rmse']:.4f}")
-    print(f"  MAE:       {metrics['mae']:.4f}")
-    print(f"  R-squared: {metrics['r2']:.4f}")
+    print(f"  Accuracy:  {metrics['accuracy']:.4f}")
+    print(f"  AUC:       {metrics['auc']:.4f}")
+    print(f"  Log loss:  {metrics['log_loss']:.4f}  (base = {-np.log(0.5):.4f})")
+    print(f"  Brier:     {metrics['brier']:.4f}  (base = 0.25)")
+    print(f"  Test base rate: {metrics['base_rate']:.4f}")
+
+    # --- Step 7: Per-match aggregate classifier ---
+    print("\n[7] Building per-match training/test data (1 row per match)...")
+    Xm_train, ym_train = build_match_training_data(train_df, embed_dict, champ_scores)
+    Xm_test, ym_test = build_match_training_data(test_df, embed_dict, champ_scores)
+    print(f"  Match-level: train={len(ym_train)} | test={len(ym_test)} | features={Xm_train.shape[1]}")
+
+    print(f"  Train base rate P(blue_win): {ym_train.mean():.4f}")
+    match_model = train_match_classifier(Xm_train, ym_train, X_val=Xm_test, y_val=ym_test)
+
+    print("\n[7.1] Evaluating calibrated per-match classifier on validation...")
+    m_metrics = evaluate_match_model(match_model, Xm_test, ym_test)
+    print(f"  Accuracy:  {m_metrics['accuracy']:.4f}")
+    print(f"  AUC:       {m_metrics['auc']:.4f}")
+    print(f"  Log loss:  {m_metrics['log_loss']:.4f}  (base = {-np.log(0.5):.4f})")
+    print(f"  Brier:     {m_metrics['brier']:.4f}  (base = 0.25)")
+    print(f"  Test base rate: {m_metrics['base_rate']:.4f}")
 
     # --- Save everything ---
     print(f"\nSaving to {OUTPUT_DIR}/...")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    save_match_model(match_model, OUTPUT_DIR / "match_model.joblib")
 
     # Save LightGBM model
     save_draft_model(lgb_model, OUTPUT_DIR / "draft_model.joblib")

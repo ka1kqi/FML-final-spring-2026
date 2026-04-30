@@ -40,16 +40,16 @@ def recommend_at_step(
         step: current step index (0-9)
         blue_picks: list of 5 slots, None for unfilled
         red_picks: list of 5 slots, None for unfilled
-        model: trained HistGradientBoostingRegressor
+        model: trained HistGradientBoostingClassifier
         embed_dict: champion name -> embedding vector
-        champ_scores: champion name -> average comp score
+        champ_scores: champion name -> historical avg comp score (feature)
         candidate_pool: list of valid champion names for this slot
                        (e.g. filtered by role). If None, uses all champions.
         banned: list of banned champion names to exclude
         top_k: number of recommendations to return
 
     Returns:
-        List of (champion_name, win_probability) sorted descending
+        List of (champion_name, win_prob in [0,1]) sorted descending.
     """
     if step < 0 or step >= len(DRAFT_ORDER):
         return []
@@ -81,9 +81,9 @@ def recommend_at_step(
         features = build_candidate_features(
             champ, allies, enemies, embed_dict, champ_scores
         )
-        score = model.predict(features.reshape(1, -1))[0]
+        win_prob = model.predict_proba(features.reshape(1, -1))[0, 1]
 
-        scored.append((champ, float(score)))
+        scored.append((champ, float(win_prob)))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_k]
