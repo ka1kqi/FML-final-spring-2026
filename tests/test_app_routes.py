@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from app.server import app
+from app.server import app, champion_list
 
 
 @pytest.fixture
@@ -58,7 +58,6 @@ def test_recommend_returns_required_fields(client):
 
 def test_evaluate_returns_prob_source(client):
     # Take any 10 champions from the loaded vocab
-    from app.server import champion_list
     blue = champion_list[:5]
     red = champion_list[5:10]
     resp = client.post(

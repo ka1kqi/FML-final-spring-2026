@@ -19,7 +19,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.inference.champion_vocab import load_champion_vocab, load_role_champion_options
 from src.inference.draft_recommender import (
     load_draft_resources,
-    recommend_at_step,
     get_current_step,
     DRAFT_ORDER,
 )
@@ -43,6 +42,23 @@ draft_model, embed_dict, champ_scores = load_draft_resources(DRAFT_MODELS_DIR)
 
 wide_deep_adapter = WideDeepDraftAdapter(model_dir=DRAFT_MODELS_DIR)
 print(f"Wide & Deep adapter available: {wide_deep_adapter.available}")
+
+
+def _adapter_status() -> tuple[str, str, list[str]]:
+    """Return (prob_source, model_version, warnings) for the current adapter state.
+
+    prob_source is "wide_deep" when the adapter is available, else
+    "score_heuristic_fallback". warnings is a list ready to merge into the
+    response payload.
+    """
+    if wide_deep_adapter.available:
+        return "wide_deep", wide_deep_adapter.model_version, []
+    return (
+        "score_heuristic_fallback",
+        wide_deep_adapter.model_version,
+        ["Wide & Deep artifact missing — using score-derived heuristic for win_prob."],
+    )
+
 
 # Build a champion -> list-of-roles mapping for the frontend
 champ_roles: dict[str, list[str]] = {}
@@ -127,11 +143,13 @@ def api_recommend():
         step = get_current_step(blue_picks, red_picks)
 
     if step >= len(DRAFT_ORDER):
+        prob_source, model_version, warnings = _adapter_status()
         return jsonify({
+            "step": step,
             "side": None, "slot": None, "recommendations": [],
-            "prob_source": "wide_deep" if wide_deep_adapter.available else "score_heuristic_fallback",
-            "model_version": wide_deep_adapter.model_version,
-            "warnings": [],
+            "prob_source": prob_source,
+            "model_version": model_version,
+            "warnings": warnings,
         })
 
     side, slot = DRAFT_ORDER[step]
@@ -157,17 +175,15 @@ def api_recommend():
         rerank_top_n=30,
     )
 
-    warnings = []
-    if not wide_deep_adapter.available:
-        warnings.append("Wide & Deep artifact missing — using score-derived heuristic for win_prob.")
+    prob_source, model_version, warnings = _adapter_status()
 
     return jsonify({
         "step": step,
         "side": side,
         "slot": slot,
         "recommendations": recs,
-        "prob_source": "wide_deep" if wide_deep_adapter.available else "score_heuristic_fallback",
-        "model_version": wide_deep_adapter.model_version,
+        "prob_source": prob_source,
+        "model_version": model_version,
         "warnings": warnings,
     })
 
@@ -178,8 +194,6 @@ def api_evaluate():
     body = request.get_json(force=True)
     blue_picks = body.get("blue_picks", [])
     red_picks = body.get("red_picks", [])
-
-    warnings = []
 
     if (
         len(blue_picks) != 5
@@ -209,20 +223,20 @@ def api_evaluate():
     if wide_deep_adapter.available:
         blue_win_prob = wide_deep_adapter.predict_blue_win_prob(blue_picks, red_picks)
         red_win_prob = 1.0 - blue_win_prob
-        source = "wide_deep"
     else:
         blue_win_prob = max(0.0, min(1.0, 0.50 + (avg_blue_score - 50.0) * 0.01))
         red_win_prob = 1.0 - blue_win_prob
-        source = "score_heuristic_fallback"
-        warnings.append("Wide & Deep artifact missing — using score-derived heuristic for win_prob.")
+
+    prob_source, model_version, base_warnings = _adapter_status()
+    warnings = base_warnings
 
     return jsonify({
         "blue_score": round(avg_blue_score, 1),
         "blue_win_prob": round(blue_win_prob, 4),
         "red_score": round(avg_red_score, 1),
         "red_win_prob": round(red_win_prob, 4),
-        "prob_source": source,
-        "model_version": wide_deep_adapter.model_version,
+        "prob_source": prob_source,
+        "model_version": model_version,
         "warnings": warnings,
     })
 
