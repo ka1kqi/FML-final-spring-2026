@@ -8,6 +8,10 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <!-- Background Music (https://www.youtube.com/watch?v=1_sgt3t3M8M&list=RD1_sgt3t3M8M&start_radio=1) -->
+  <audio id="bg-music" autoplay loop volume="0.3">
+    <source src="/static/champ-select.mp3" type="audio/mpeg">
+  </audio>
   <!-- ===== NAVIGATION TABS ===== -->
   <div class="nav-tabs">
     <div class="nav-tab active" id="tab-draft" onclick="switchTab('draft')">DRAFT SIMULATOR</div>
@@ -61,11 +65,11 @@
             oninput="setSearch(this.value)"
           >
           <div class="role-filters">
-            <button class="role-btn" onclick="setRoleFilter('Top')" id="filter-Top" title="Top"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-top.png" width="20" height="20"></button>
-            <button class="role-btn" onclick="setRoleFilter('Jungle')" id="filter-Jungle" title="Jungle"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-jungle.png" width="20" height="20"></button>
-            <button class="role-btn" onclick="setRoleFilter('Mid')" id="filter-Mid" title="Mid"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-middle.png" width="20" height="20"></button>
-            <button class="role-btn" onclick="setRoleFilter('ADC')" id="filter-ADC" title="ADC"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-bottom.png" width="20" height="20"></button>
-            <button class="role-btn" onclick="setRoleFilter('Support')" id="filter-Support" title="Support"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-utility.png" width="20" height="20"></button>
+            <button class="role-btn" onclick="setRoleFilter('Top')" id="filter-Top" title="Top">T</button>
+            <button class="role-btn" onclick="setRoleFilter('Jungle')" id="filter-Jungle" title="Jungle">J</button>
+            <button class="role-btn" onclick="setRoleFilter('Mid')" id="filter-Mid" title="Mid">M</button>
+            <button class="role-btn" onclick="setRoleFilter('ADC')" id="filter-ADC" title="ADC">A</button>
+            <button class="role-btn" onclick="setRoleFilter('Support')" id="filter-Support" title="Support">S</button>
           </div>
         </div>
         <div class="champion-grid-container">
@@ -148,11 +152,11 @@
               <img id="analysis-main-img" src="" alt="">
               <h2 id="analysis-main-name">Champion Name</h2>
               <div class="analysis-role-selector">
-                <button class="role-btn" onclick="setRoleFilter('Top')" id="filter-Top" title="Top"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-top.png" width="20" height="20"></button>
-                <button class="role-btn" onclick="setRoleFilter('Jungle')" id="filter-Jungle" title="Jungle"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-jungle.png" width="20" height="20"></button>
-                <button class="role-btn" onclick="setRoleFilter('Mid')" id="filter-Mid" title="Mid"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-middle.png" width="20" height="20"></button>
-                <button class="role-btn" onclick="setRoleFilter('ADC')" id="filter-ADC" title="ADC"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-bottom.png" width="20" height="20"></button>
-                <button class="role-btn" onclick="setRoleFilter('Support')" id="filter-Support" title="Support"><img src="https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-utility.png" width="20" height="20"></button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('TOP')" title="Top">T</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('JUNGLE')" title="Jungle">J</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('MIDDLE')" title="Mid">M</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('BOTTOM')" title="ADC">A</button>
+                <button class="role-mini-btn" onclick="setAnalysisRole('UTILITY')" title="Support">S</button>
               </div>
             </div>
             <div class="analysis-roles">

@@ -125,6 +125,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   allChampions = await fetch("/api/champions").then(r => r.json());
   syncProbToggleUI();
   render();
+
+  // Background music starts on first user interaction to avoid autoplay blocks, but set up the element and volume now.
+  const music = document.getElementById("bg-music");
+  if (music) {
+    music.volume = 0.3;
+    music.play().catch(() => {
+      // Autoplay blocked — wait for first click
+      document.addEventListener("click", () => music.play(), { once: true });
+    });
+  }
 });
 
 // ---------- Utility ----------
