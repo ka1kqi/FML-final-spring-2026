@@ -1115,6 +1115,9 @@ a.nav-tab.nav-tab-link {
   font-weight: 800;
   cursor: pointer;
   transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .role-mini-btn:hover {
@@ -1127,6 +1130,15 @@ a.nav-tab.nav-tab-link {
   color: var(--bg-primary);
   border-color: var(--gold);
   box-shadow: 0 0 10px var(--gold-dim);
+}
+
+.role-mini-btn img {
+  width: 30px;
+  height: 30px;
+  max-width: 30px;
+  max-height: 30px;
+  display: block;
+  object-fit: contain;
 }
 
 .role-mini-btn.disabled,
