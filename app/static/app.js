@@ -35,6 +35,10 @@ let recommendations = [];
 let swapState = null; // { side, slot } if swapping
 let recOffset = 0;
 let recommendWarnings = []; // non-breaking: backend warning strings (e.g. W&D fallback)
+// Bulk-ban state is only used during ban phases. The queue preserves the
+// click order so committed bans fill the top ban slots in the same order.
+let bulkBanMode = false;
+let bulkBanQueue = [];
 
 // Win-prob source: "wide_deep" | "match_classifier" | "heuristic"
 // Persisted in localStorage so the choice survives reloads.
@@ -151,6 +155,18 @@ function getChampImg(name) {
   return c ? c.img : "";
 }
 
+function isBanPhase() {
+  return phase === "ban-blue" || phase === "ban-red";
+}
+
+function getActiveBanList() {
+  return phase === "ban-blue" ? blueBans : redBans;
+}
+
+function clearBulkBanQueue() {
+  bulkBanQueue = [];
+}
+
 // ---------- API ----------
 async function fetchRecommendations() {
   if (phase !== "pick" || currentPickStep >= DRAFT_ORDER.length) {
@@ -191,8 +207,63 @@ async function fetchRecommendations() {
 // ---------- Actions ----------
 function selectChampion(name) {
   if (getUsed().has(name)) return;
+  if (isBanPhase() && bulkBanMode) {
+    toggleBulkBanChampion(name);
+    return;
+  }
   selectedChampion = name;
+  renderSelectionState();
+}
+
+/** Toggle bulk-ban mode; leaving the mode drops any staged ban selections. */
+function toggleBulkBanMode() {
+  if (!isBanPhase()) return;
+  bulkBanMode = !bulkBanMode;
+  selectedChampion = null;
+  clearBulkBanQueue();
+  renderSelectionState();
+}
+
+/** Add or remove one champion from the ordered bulk-ban queue. */
+function toggleBulkBanChampion(name) {
+  if (!isBanPhase() || !bulkBanMode || getUsed().has(name)) return;
+
+  const idx = bulkBanQueue.indexOf(name);
+  if (idx >= 0) {
+    bulkBanQueue.splice(idx, 1);
+  } else {
+    const remainingSlots = 5 - getActiveBanList().length;
+    if (bulkBanQueue.length >= remainingSlots) return;
+    bulkBanQueue.push(name);
+  }
+
+  renderSelectionState();
+}
+
+/** Commit queued bans in click order, advancing only after a team has five bans. */
+function commitBulkBans() {
+  if (!isBanPhase() || !bulkBanMode || bulkBanQueue.length === 0) return;
+
+  const bans = getActiveBanList();
+  bulkBanQueue.forEach(name => {
+    if (bans.length < 5 && !getUsed().has(name)) {
+      bans.push(name);
+    }
+  });
+
+  selectedChampion = null;
+  clearBulkBanQueue();
+
+  if (phase === "ban-blue" && blueBans.length >= 5) {
+    phase = "ban-red";
+  } else if (phase === "ban-red" && redBans.length >= 5) {
+    phase = "pick";
+    bulkBanMode = false;
+    currentPickStep = 0;
+  }
+
   render();
+  if (phase === "pick") fetchRecommendations().then(render);
 }
 
 function lockIn() {
@@ -233,6 +304,7 @@ function lockIn() {
 }
 
 function skipBan() {
+  clearBulkBanQueue();
   if (phase === "ban-blue" && blueBans.length < 5) {
     blueBans.push("__skip__");
     if (blueBans.length >= 5) phase = "ban-red";
@@ -240,6 +312,7 @@ function skipBan() {
     redBans.push("__skip__");
     if (redBans.length >= 5) {
       phase = "pick";
+      bulkBanMode = false;
       currentPickStep = 0;
       fetchRecommendations().then(render);
     }
@@ -262,6 +335,8 @@ function resetDraft() {
   recommendations = [];
   swapState = null;
   recOffset = 0;
+  bulkBanMode = false;
+  clearBulkBanQueue();
   render();
 }
 
@@ -328,6 +403,11 @@ function render() {
   renderCompleteOverlay();
 }
 
+function renderSelectionState() {
+  renderGrid();
+  renderBottomActions();
+}
+
 function renderBans() {
   const blueContainer = document.getElementById("blue-bans");
   const redContainer = document.getElementById("red-bans");
@@ -371,19 +451,27 @@ function createBanSlot(champ, side, idx) {
 
 function renderTeam(side) {
   const container = document.getElementById(`${side}-picks`);
-  container.innerHTML = "";
-
   const picks = side === "blue" ? bluePicks : redPicks;
   const roles = side === "blue" ? blueRoles : redRoles;
+  const teamName = side === "blue" ? "Blue" : "Red";
 
   for (let i = 0; i < 5; i++) {
-    const slot = document.createElement("div");
+    let slot = container.children[i];
+    if (!slot || !slot.classList.contains("pick-slot")) {
+      slot = createPickSlot(side, i);
+      if (container.children[i]) {
+        container.replaceChild(slot, container.children[i]);
+      } else {
+        container.appendChild(slot);
+      }
+    }
+
     slot.className = "pick-slot";
 
     // Check if this slot is the active pick
     if (phase === "pick" && currentPickStep < DRAFT_ORDER.length) {
       const cs = DRAFT_ORDER[currentPickStep];
-      if (cs.side === (side === "blue" ? "Blue" : "Red") && cs.slot === i) {
+      if (cs.side === teamName && cs.slot === i) {
         slot.classList.add("active");
       }
     }
@@ -396,43 +484,59 @@ function renderTeam(side) {
       slot.classList.add("swap-source");
     }
 
-    // Portrait
-    const imgDiv = document.createElement("div");
-    imgDiv.className = "pick-slot-img";
-    if (picks[i]) {
-      const img = document.createElement("img");
-      img.src = getChampImg(picks[i]);
-      img.alt = picks[i];
-      imgDiv.appendChild(img);
+    const imgDiv = slot.querySelector(".pick-slot-img");
+    const champName = picks[i] || "";
+    if (imgDiv.dataset.champ !== champName) {
+      imgDiv.dataset.champ = champName;
+      imgDiv.innerHTML = "";
+      if (picks[i]) {
+        const img = document.createElement("img");
+        img.src = getChampImg(picks[i]);
+        img.alt = picks[i];
+        imgDiv.appendChild(img);
+      }
     }
-    slot.appendChild(imgDiv);
 
-    // Info
-    const info = document.createElement("div");
-    info.className = "pick-slot-info";
-    const roleEl = document.createElement("div");
-    roleEl.className = "pick-slot-role";
+    const roleEl = slot.querySelector(".pick-slot-role");
     roleEl.textContent = ROLE_SHORT[roles[i]] || roles[i];
-    const nameEl = document.createElement("div");
-    nameEl.className = "pick-slot-name";
+    const nameEl = slot.querySelector(".pick-slot-name");
     nameEl.textContent = picks[i] || "—";
-    info.appendChild(roleEl);
-    info.appendChild(nameEl);
-    slot.appendChild(info);
-
-    // Swap button
-    const swapBtn = document.createElement("div");
-    swapBtn.className = "pick-slot-swap";
-    swapBtn.textContent = "⇄";
-    swapBtn.title = "Swap role";
-    swapBtn.onclick = (e) => {
-      e.stopPropagation();
-      swapRoles(side === "blue" ? "Blue" : "Red", i);
-    };
-    slot.appendChild(swapBtn);
-
-    container.appendChild(slot);
   }
+
+  while (container.children.length > 5) {
+    container.removeChild(container.lastElementChild);
+  }
+}
+
+function createPickSlot(side, slotIdx) {
+  const slot = document.createElement("div");
+  slot.className = "pick-slot";
+
+  const imgDiv = document.createElement("div");
+  imgDiv.className = "pick-slot-img";
+  slot.appendChild(imgDiv);
+
+  const info = document.createElement("div");
+  info.className = "pick-slot-info";
+  const roleEl = document.createElement("div");
+  roleEl.className = "pick-slot-role";
+  const nameEl = document.createElement("div");
+  nameEl.className = "pick-slot-name";
+  info.appendChild(roleEl);
+  info.appendChild(nameEl);
+  slot.appendChild(info);
+
+  const swapBtn = document.createElement("div");
+  swapBtn.className = "pick-slot-swap";
+  swapBtn.textContent = "⇄";
+  swapBtn.title = "Swap role";
+  swapBtn.onclick = (e) => {
+    e.stopPropagation();
+    swapRoles(side === "blue" ? "Blue" : "Red", slotIdx);
+  };
+  slot.appendChild(swapBtn);
+
+  return slot;
 }
 
 function renderGrid() {
@@ -473,6 +577,9 @@ function renderGrid() {
     if (selectedChampion === champ.name) {
       cell.classList.add("selected");
     }
+    if (isBanPhase() && bulkBanMode && bulkBanQueue.includes(champ.name)) {
+      cell.classList.add("bulk-ban-queued");
+    }
 
     const img = document.createElement("img");
     img.src = champ.img;
@@ -486,7 +593,13 @@ function renderGrid() {
     cell.appendChild(tooltip);
 
     if (!used.has(champ.name) && !bannedSet.has(champ.name)) {
-      cell.onclick = () => selectChampion(champ.name);
+      cell.onclick = () => {
+        if (isBanPhase() && bulkBanMode) {
+          toggleBulkBanChampion(champ.name);
+        } else {
+          selectChampion(champ.name);
+        }
+      };
     }
 
     grid.appendChild(cell);
@@ -617,25 +730,32 @@ function renderRecommendations() {
 function renderBottomActions() {
   const lockBtn = document.getElementById("lock-btn");
   const skipBtn = document.getElementById("skip-ban-btn");
+  const bulkBanBtn = document.getElementById("bulk-ban-mode-btn");
 
   if (phase === "ban-blue" || phase === "ban-red") {
-    lockBtn.textContent = "BAN";
+    lockBtn.textContent = bulkBanMode ? "BAN SELECTED" : "BAN";
     lockBtn.className = "lock-btn ban-mode";
-    lockBtn.disabled = !selectedChampion;
-    lockBtn.onclick = lockIn;
+    lockBtn.disabled = bulkBanMode ? bulkBanQueue.length === 0 : !selectedChampion;
+    lockBtn.onclick = bulkBanMode ? commitBulkBans : lockIn;
     skipBtn.classList.remove("hidden");
     skipBtn.onclick = skipBan;
+    bulkBanBtn.classList.remove("hidden");
+    bulkBanBtn.classList.toggle("active", bulkBanMode);
+    bulkBanBtn.textContent = bulkBanMode ? "Bulk Ban: On" : "Bulk Ban";
+    bulkBanBtn.onclick = toggleBulkBanMode;
   } else if (phase === "pick") {
     lockBtn.textContent = "LOCK IN";
     lockBtn.className = "lock-btn";
     lockBtn.disabled = !selectedChampion;
     lockBtn.onclick = lockIn;
     skipBtn.classList.add("hidden");
+    bulkBanBtn.classList.add("hidden");
   } else {
     lockBtn.textContent = "COMPLETE";
     lockBtn.className = "lock-btn";
     lockBtn.disabled = true;
     skipBtn.classList.add("hidden");
+    bulkBanBtn.classList.add("hidden");
   }
 }
 
